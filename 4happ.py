@@ -5,12 +5,11 @@ import streamlit as st
 import asyncio
 import time
 import requests
-import pygame
 import io
 
 # 初始化 gate.io 的 API
-api_key = '6e862684943d7bb11d2654f2618be40d'
-api_secret = '23ee003ce06ba17ab6266a91ead8248305897bea574af4117dfd9563fe45d128'
+api_key = st.secrets["api_key"]
+api_secret = st.secrets["api_secret"]
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -22,7 +21,11 @@ exchange = ccxt.gateio({
 audio_url = 'https://raw.githubusercontent.com/b7319/-mccd-/main/y1314.wav'
 
 # 全局记录已显示的符号及其 MA7 波谷值
-displayed_symbols = {}
+if 'displayed_symbols' not in st.session_state:
+    st.session_state['displayed_symbols'] = {}
+
+displayed_symbols = st.session_state['displayed_symbols']
+
 
 def load_markets_with_retry():
     """加载市场数据，带重试机制"""
@@ -31,10 +34,10 @@ def load_markets_with_retry():
             exchange.load_markets()
             break
         except ccxt.NetworkError:
-            st.write(f"网络错误，重试中（{attempt + 1}/3）...") 
+            st.warning(f"网络错误，重试中（{attempt + 1}/3）...") 
             time.sleep(5)
         except Exception as e:
-            st.write(f"加载市场数据时出错: {str(e)}")
+            st.error(f"加载市场数据时出错: {str(e)}")
             st.stop()
 
 load_markets_with_retry()
@@ -52,9 +55,9 @@ def fetch_and_filter_usdt_pairs():
                 valid_pairs.append(symbol)
         except ccxt.BaseError as e:
             if 'INVALID_CURRENCY' in str(e):
-                st.write(f"{symbol} 已下架，跳过。")
+                st.warning(f"{symbol} 已下架，跳过。")
             else:
-                st.write(f"获取 {symbol} 数据时出错: {str(e)}")
+                st.error(f"获取 {symbol} 数据时出错: {str(e)}")
 
     return valid_pairs
 
@@ -97,18 +100,10 @@ def fetch_data(symbol, timeframe='4h', days=68):
     return df
 
 def play_sound():
-    """播放提示音"""
-    response = requests.get(audio_url)
-    if response.status_code == 200:
-        # 使用 pygame 播放音频
-        pygame.mixer.init()
-        pygame.mixer.music.load(io.BytesIO(response.content))  # 通过 BytesIO 加载音频数据
-        pygame.mixer.music.play()
-    else:
-        st.warning("音频文件无法下载。")
+    """在浏览器中播放提示音"""
+    st.audio(audio_url)
 
 async def monitor_symbols():
-    global displayed_symbols
     symbols = fetch_and_filter_usdt_pairs()
 
     total_symbols = len(symbols)
@@ -129,11 +124,11 @@ async def monitor_symbols():
                             st.write(f"交易对: {symbol}")
                             st.write(f"MA7波谷值: {valley_value} (时间: {valley_time})")
                             st.write(f"MA34波峰值: {peak_value} (时间: {peak_time})")
-                            st.write(f"检测时间: {datetime.now()}")
+                            st.write(f"检测时间: {datetime.now()}") 
                             st.write("---")
                             # 播放音频
                             play_sound()
-                            break  # 找到一个符合条件的波峰后不再继续查找
+                            break
 
                 # 更新检测进度
                 progress = (index + 1) / total_symbols
@@ -146,17 +141,16 @@ async def monitor_symbols():
             except ccxt.base.errors.ExchangeError as e:
                 # 如果请求被限制，则等待一段时间后重试
                 if 'Request Rate Limit Exceeded' in str(e):
-                    st.write(f"请求超限，对 {symbol} 进行重试...")
+                    st.warning(f"请求超限，对 {symbol} 进行重试...")
                     await asyncio.sleep(30)  # 等待 30 秒后重试
                 else:
-                    st.write(f"{symbol} 错误: {str(e)}")
+                    st.error(f"{symbol} 错误: {str(e)}")
 
         # 每次检测完成后等待 60 秒再循环
         await asyncio.sleep(60)
 
-# 主函数
 async def main():
     await monitor_symbols()
 
-# 运行程序
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())
