@@ -22,7 +22,7 @@ exchange = ccxt.gateio({
 pygame.mixer.init()
 
 # GitHub 音频文件 URL
-audio_url = 'https://github.com/yourusername/repository/raw/main/y1314.wav'
+audio_url = 'https://raw.githubusercontent.com/b7319/-mccd-/main/y1314.wav'
 
 # 全局记录已显示的符号及其 MA7 波谷值
 displayed_symbols = {}
@@ -110,7 +110,7 @@ def fetch_data(symbol, timeframe='4h', days=68):
 def play_sound():
     """播放提示音"""
     try:
-        response = requests.get(https://github.com/b7319/-mccd-/blob/main/y1314.wav)
+        response = requests.get('https://raw.githubusercontent.com/b7319/-mccd-/main/y1314.wav')
         with open('temp_audio.wav', 'wb') as f:
             f.write(response.content)
         pygame.mixer.music.load('temp_audio.wav')
