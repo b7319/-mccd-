@@ -2,181 +2,171 @@ import ccxt
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
+import asyncio
+import os
+import pygame
+import time
+import requests
 
-# 初始化 Gate.io API
-api_key = 'YOUR_API_KEY'  # 替换为你的 API Key
-api_secret = 'YOUR_API_SECRET'  # 替换为你的 API Secret
-exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
+# 初始化 gate.io 的 API
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
+exchange = ccxt.gateio({
+    'apiKey': api_key,
+    'secret': api_secret,
+    'enableRateLimit': True,
+    'timeout': 68686
+})
 
-# 初始化交易市场数据，加载市场列表
+# 初始化音频系统
+pygame.mixer.init()
+
+# GitHub 音频文件 URL
+audio_url = 'https://github.com/yourusername/repository/raw/main/y1314.wav'
+
+# 全局记录已显示的符号及其 MA7 波谷值
+displayed_symbols = {}
+
+
 def load_markets_with_retry():
-    """尝试加载交易所市场，最多重试 3 次"""
+    """加载市场数据，带重试机制"""
     for attempt in range(3):
         try:
             exchange.load_markets()
             break
         except ccxt.NetworkError:
-            st.write(f"网络错误，正在重试 ({attempt + 1}/3)...")
+            st.write(f"网络错误，重试中（{attempt + 1}/3）...")
+            time.sleep(5)
         except Exception as e:
             st.write(f"加载市场数据时出错: {str(e)}")
             st.stop()
 
+
 load_markets_with_retry()
 
-# 获取 USDT 现货交易对，日交易额超过 100 万 USDT 的交易对
-def get_active_usdt_symbols(min_volume=1000000):
-    """获取日交易额超过指定金额的 USDT 交易对"""
-    try:
-        tickers = exchange.fetch_tickers()  # 获取所有交易对的行情信息
-        active_symbols = []
-        for symbol, ticker in tickers.items():
-            if symbol.endswith('/USDT') and 'spot' in ticker.get('type', ''):
-                # 检查交易额是否超过指定值
-                if ticker.get('quoteVolume', 0) > min_volume:
-                    active_symbols.append(symbol)
-        return active_symbols
-    except Exception as e:
-        st.write(f"获取交易对时出错: {str(e)}")
-        return []
 
-# 获取指定交易对的历史数据
-def fetch_data(symbol, timeframe='4h', days=68):
-    """
-    从交易所获取交易对的历史 K 线数据
-    参数：
-        symbol: 交易对名称，例如 'BTC/USDT'
-        timeframe: 时间周期，例如 '4h'
-        days: 获取最近多少天的数据
-    返回：
-        pandas.DataFrame 格式的 K 线数据，包含时间、开高低收和成交量
-    """
-    if symbol not in exchange.symbols:
-        return None
-    try:
-        since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
-        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since)
-        df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Shanghai')
-        df.set_index('timestamp', inplace=True)
+def fetch_and_filter_usdt_pairs():
+    """筛选出交易量超过 1,000,000 的 USDT 交易对"""
+    valid_pairs = []
+    usdt_pairs = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT')]
 
-        if df.empty:
-            st.write(f"{symbol} 在 {timeframe} 时间周期内没有数据。")
-            return None
+    for symbol in usdt_pairs:
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            volume_quote = ticker['quoteVolume']
+            if volume_quote > 1000000:
+                valid_pairs.append(symbol)
+        except ccxt.BaseError as e:
+            if 'INVALID_CURRENCY' in str(e):
+                st.write(f"{symbol} 已下架，跳过。")
+            else:
+                st.write(f"获取 {symbol} 数据时出错: {str(e)}")
 
-        # 计算移动平均线
-        df['ma7'] = df['close'].rolling(window=7).mean()
-        df['ma34'] = df['close'].rolling(window=34).mean()
+    return valid_pairs
 
-        return df
-    except Exception as e:
-        st.write(f"抓取 {symbol} 的数据时出错: {str(e)}")
-        return None
 
-# 识别顶分型
-def is_top_fractal(df):
-    """检查是否存在顶分型"""
-    if len(df) < 3:
-        return False
+def calculate_ma(df, period):
+    """计算移动平均值"""
+    return df['close'].rolling(window=period, min_periods=1).mean()
 
-    recent_candles = df.iloc[-3:]
-    return (recent_candles['high'][0] < recent_candles['high'][1] > recent_candles['high'][2] and
-            recent_candles['low'][0] < recent_candles['low'][1] > recent_candles['low'][2])
 
-# 计算密集成交区（VWAP）
-def calculate_vwap(df, days=68):
-    recent_data = df[-days * 6:]
+def find_recent_valley(df, column='ma7'):
+    """找出最近24小时内的MA7波谷"""
+    recent_time = df.index[-1] - timedelta(hours=24)
+    recent_data = df[df.index >= recent_time]
     if recent_data.empty:
-        return None
-    vwap = (recent_data['close'] * recent_data['volume']).sum() / recent_data['volume'].sum()
-    return round(vwap, 13)
+        return None, None
+    valley_value = recent_data[column].min()
+    valley_index = recent_data[column].idxmin()
+    return valley_index, valley_value
 
-# 检查底分型信号，并满足上方有顶分型的条件
-def check_conditions(df):
-    if len(df) < 3:
-        return False, None, None, None
 
-    recent_candles = df.iloc[-3:]
-    low_fractal_formed = (
-            recent_candles['low'].iloc[1] < recent_candles['low'].iloc[0] and
-            recent_candles['low'].iloc[1] < recent_candles['low'].iloc[2] and
-            recent_candles['high'].iloc[1] < recent_candles['high'].iloc[0] and
-            recent_candles['high'].iloc[1] < recent_candles['high'].iloc[2]
-    )
+def find_valid_peaks(df, column='ma34', threshold=0.005):
+    """找到显著的 MA34 波峰，排除无效波峰"""
+    peaks = []
+    for i in range(1, len(df) - 1):
+        if df[column][i] > df[column][i - 1] and df[column][i] > df[column][i + 1]:
+            peak_value = df[column][i]
+            peak_index = df.index[i]
+            # 阈值控制，避免波动造成的重复波峰
+            if peaks and abs(peak_value - peaks[-1][1]) / peaks[-1][1] < threshold:
+                continue
+            peaks.append((peak_index, peak_value))
+    return peaks
 
-    if not low_fractal_formed:
-        return False, None, None, None
 
-    # 计算密集成交区的 VWAP 值
-    vwap = calculate_vwap(df)
-    if vwap is None:
-        return False, None, None, None
+def fetch_data(symbol, timeframe='4h', days=68):
+    """获取数据并计算MA7和MA34"""
+    since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
+    ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since)
+    df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Shanghai')
+    df.set_index('timestamp', inplace=True)
+    df['ma7'] = calculate_ma(df, 7)
+    df['ma34'] = calculate_ma(df, 34)
+    return df
 
-    # 检查条件：底分型最低价或 MA7 波谷距离 VWAP 小于等于 3%
-    ma7_valley = df['ma7'].min()  # 获取波谷的最小值
-    low_distance_condition = abs(recent_candles['low'].iloc[1] - vwap) / vwap <= 0.03
-    valley_distance_condition = abs(ma7_valley - vwap) / vwap <= 0.03
 
-    if not (low_distance_condition or valley_distance_condition):
-        return False, None, None, None
+def play_sound():
+    """播放提示音"""
+    try:
+        response = requests.get(https://github.com/b7319/-mccd-/blob/main/y1314.wav)
+        with open('temp_audio.wav', 'wb') as f:
+            f.write(response.content)
+        pygame.mixer.music.load('temp_audio.wav')
+        pygame.mixer.music.play()
+    except requests.exceptions.RequestException as e:
+        st.warning(f"提示音文件下载失败: {e}")
+    except pygame.error as e:
+        st.warning(f"音频播放错误: {e}")
 
-    # 检查底分型上方是否存在顶分型
-    top_fractal_exists = any(is_top_fractal(df.iloc[i-2:i+1]) for i in range(len(df)-3))
 
-    if not top_fractal_exists:
-        return False, None, None, None
+async def monitor_symbols():
+    global displayed_symbols
+    symbols = fetch_and_filter_usdt_pairs()
 
-    return True, df.index[-1], df['ma7'].iloc[-1], vwap
+    total_symbols = len(symbols)
+    st.title('实时交易对检测')
+    progress_bar = st.progress(0)  # 添加检测进度条
+    status_text = st.empty()  # 显示当前检测进度
 
-# 存储已触发的条件和上次信号的时间
-last_trigger_times = {}
+    while True:
+        for index, symbol in enumerate(symbols):
+            try:
+                df = fetch_data(symbol)
+                valley_time, valley_value = find_recent_valley(df, 'ma7')
+                if valley_time and symbol not in displayed_symbols:
+                    peaks = find_valid_peaks(df, 'ma34')
+                    for peak_time, peak_value in peaks:
+                        if abs((valley_value - peak_value) / peak_value) <= 0.03 and valley_value > peak_value:
+                            displayed_symbols[symbol] = valley_value
+                            st.write(f"交易对: {symbol}")
+                            st.write(f"MA7波谷值: {valley_value} (时间: {valley_time})")
+                            st.write(f"MA34波峰值: {peak_value} (时间: {peak_time})")
+                            st.write(f"检测时间: {datetime.now()}")
+                            st.write("---")
+                            play_sound()
+                            break  # 找到一个符合条件的波峰后不再继续查找
 
-def display_result(res):
-    st.write(f"交易对: {res['symbol']}")
-    st.write(f"时间周期: {res['timeframe']}")
-    st.write(f"底分型对应时间点: {res['condition_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-    st.write(f"密集成交区价格（VWAP）: {res['vwap']:.13f}")
-    st.write(f"MA7最新值: {res['ma7_value']:.13f}")
-    st.write(f"检测到信号时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    st.write("---")
+                # 更新检测进度
+                progress = (index + 1) / total_symbols
+                progress_bar.progress(progress)
+                status_text.text(f"检测进度: {index + 1}/{total_symbols} - 当前检测: {symbol}")
 
-    # 在页面中嵌入音频
-    audio_file_path = "y1314.wav"
-    with open(audio_file_path, "rb") as audio_file:
-        audio_bytes = audio_file.read()
-    st.audio(audio_bytes, format="audio/wav")
+                # 每个货币对检测的间隔为 6.8 秒
+                await asyncio.sleep(6.8)
 
-def monitor_symbols(symbols):
-    st.title('底分型与密集成交区检测 (4小时)')
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+            except Exception as e:
+                st.write(f"{symbol} 错误: {str(e)}")
 
-    for index, symbol in enumerate(symbols):
-        current_time = datetime.now()
-        df = fetch_data(symbol)
-        if df is not None and not df.empty:
-            condition_met, condition_time, ma7_value, vwap = check_conditions(df)
-            if condition_met:
-                last_trigger_time = last_trigger_times.get(symbol, None)
-                if last_trigger_time is None or (current_time - last_trigger_time).total_seconds() > 1800:
-                    last_trigger_times[symbol] = current_time
-                    symbol_data = {
-                        'symbol': symbol,
-                        'timeframe': '4小时',
-                        'condition_time': condition_time,
-                        'ma7_value': ma7_value,
-                        'vwap': vwap
-                    }
-                    display_result(symbol_data)
+        # 每次检测完成后等待 60 秒再循环
+        await asyncio.sleep(60)
 
-        progress_bar.progress((index + 1) / len(symbols))
-        status_text.text(f"正在检测交易对: {symbol}")
 
-if __name__ == "__main__":
-    # 动态获取符合条件的交易对
-    st.title("交易对加载中...")
-    symbols = get_active_usdt_symbols()
-    if symbols:
-        st.success(f"加载到 {len(symbols)} 个符合条件的交易对")
-        monitor_symbols(symbols)
-    else:
-        st.warning("未找到符合条件的交易对")
+# 主函数
+async def main():
+    await monitor_symbols()
+
+
+# 运行程序
+asyncio.run(main())
