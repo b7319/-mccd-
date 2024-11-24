@@ -9,8 +9,8 @@ import pygame
 import io
 
 # 初始化 gate.io 的 API
-api_key = '62b4392e8f9786f55a055161fe42f08f'
-api_secret = 'cd93bfa7dccd9d6e572f76295929ce7588b3e476848f9a963e6537e74fe6fc25'
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -140,11 +140,16 @@ async def monitor_symbols():
                 progress_bar.progress(progress)
                 status_text.text(f"检测进度: {index + 1}/{total_symbols} - 当前检测: {symbol}")
 
-                # 每个货币对检测的间隔为 6 秒（减少请求频率）
-                await asyncio.sleep(6)
+                # 每个货币对检测的间隔为 5 秒，减少请求频率
+                await asyncio.sleep(5)
 
-            except Exception as e:
-                st.write(f"{symbol} 错误: {str(e)}")
+            except ccxt.base.errors.ExchangeError as e:
+                # 如果请求被限制，则等待一段时间后重试
+                if 'Request Rate Limit Exceeded' in str(e):
+                    st.write(f"请求超限，对 {symbol} 进行重试...")
+                    await asyncio.sleep(30)  # 等待 30 秒后重试
+                else:
+                    st.write(f"{symbol} 错误: {str(e)}")
 
         # 每次检测完成后等待 60 秒再循环
         await asyncio.sleep(60)
