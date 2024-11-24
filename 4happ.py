@@ -140,8 +140,8 @@ async def monitor_symbols():
                 progress_bar.progress(progress)
                 status_text.text(f"检测进度: {index + 1}/{total_symbols} - 当前检测: {symbol}")
 
-                # 每个货币对检测的间隔为 6.8 秒
-                await asyncio.sleep(6.8)
+                # 每个货币对检测的间隔为 2 秒（减少请求频率）
+                await asyncio.sleep(2)
 
             except Exception as e:
                 st.write(f"{symbol} 错误: {str(e)}")
