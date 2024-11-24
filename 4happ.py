@@ -9,8 +9,8 @@ import pygame
 import io
 
 # 初始化 gate.io 的 API
-api_key = 'YOUR_API_KEY'
-api_secret = 'YOUR_API_SECRET'
+api_key = '6e862684943d7bb11d2654f2618be40d'
+api_secret = '23ee003ce06ba17ab6266a91ead8248305897bea574af4117dfd9563fe45d128'
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
