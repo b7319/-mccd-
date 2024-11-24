@@ -3,10 +3,10 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import asyncio
-import os
-import pygame
 import time
 import requests
+import pygame
+import io
 
 # 初始化 gate.io 的 API
 api_key = 'YOUR_API_KEY'
@@ -18,15 +18,11 @@ exchange = ccxt.gateio({
     'timeout': 68686
 })
 
-# 初始化音频系统
-pygame.mixer.init()
-
 # GitHub 音频文件 URL
 audio_url = 'https://raw.githubusercontent.com/b7319/-mccd-/main/y1314.wav'
 
 # 全局记录已显示的符号及其 MA7 波谷值
 displayed_symbols = {}
-
 
 def load_markets_with_retry():
     """加载市场数据，带重试机制"""
@@ -35,15 +31,13 @@ def load_markets_with_retry():
             exchange.load_markets()
             break
         except ccxt.NetworkError:
-            st.write(f"网络错误，重试中（{attempt + 1}/3）...")
+            st.write(f"网络错误，重试中（{attempt + 1}/3）...") 
             time.sleep(5)
         except Exception as e:
             st.write(f"加载市场数据时出错: {str(e)}")
             st.stop()
 
-
 load_markets_with_retry()
-
 
 def fetch_and_filter_usdt_pairs():
     """筛选出交易量超过 1,000,000 的 USDT 交易对"""
@@ -64,11 +58,9 @@ def fetch_and_filter_usdt_pairs():
 
     return valid_pairs
 
-
 def calculate_ma(df, period):
     """计算移动平均值"""
     return df['close'].rolling(window=period, min_periods=1).mean()
-
 
 def find_recent_valley(df, column='ma7'):
     """找出最近24小时内的MA7波谷"""
@@ -79,7 +71,6 @@ def find_recent_valley(df, column='ma7'):
     valley_value = recent_data[column].min()
     valley_index = recent_data[column].idxmin()
     return valley_index, valley_value
-
 
 def find_valid_peaks(df, column='ma34', threshold=0.005):
     """找到显著的 MA34 波峰，排除无效波峰"""
@@ -94,7 +85,6 @@ def find_valid_peaks(df, column='ma34', threshold=0.005):
             peaks.append((peak_index, peak_value))
     return peaks
 
-
 def fetch_data(symbol, timeframe='4h', days=68):
     """获取数据并计算MA7和MA34"""
     since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
@@ -106,20 +96,16 @@ def fetch_data(symbol, timeframe='4h', days=68):
     df['ma34'] = calculate_ma(df, 34)
     return df
 
-
 def play_sound():
     """播放提示音"""
-    try:
-        response = requests.get('https://raw.githubusercontent.com/b7319/-mccd-/main/y1314.wav')
-        with open('temp_audio.wav', 'wb') as f:
-            f.write(response.content)
-        pygame.mixer.music.load('temp_audio.wav')
+    response = requests.get(audio_url)
+    if response.status_code == 200:
+        # 使用 pygame 播放音频
+        pygame.mixer.init()
+        pygame.mixer.music.load(io.BytesIO(response.content))  # 通过 BytesIO 加载音频数据
         pygame.mixer.music.play()
-    except requests.exceptions.RequestException as e:
-        st.warning(f"提示音文件下载失败: {e}")
-    except pygame.error as e:
-        st.warning(f"音频播放错误: {e}")
-
+    else:
+        st.warning("音频文件无法下载。")
 
 async def monitor_symbols():
     global displayed_symbols
@@ -145,6 +131,7 @@ async def monitor_symbols():
                             st.write(f"MA34波峰值: {peak_value} (时间: {peak_time})")
                             st.write(f"检测时间: {datetime.now()}")
                             st.write("---")
+                            # 播放音频
                             play_sound()
                             break  # 找到一个符合条件的波峰后不再继续查找
 
@@ -162,11 +149,9 @@ async def monitor_symbols():
         # 每次检测完成后等待 60 秒再循环
         await asyncio.sleep(60)
 
-
 # 主函数
 async def main():
     await monitor_symbols()
-
 
 # 运行程序
 asyncio.run(main())
