@@ -2,7 +2,6 @@ import ccxt
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
-import os
 
 # 初始化 Gate.io API
 api_key = 'YOUR_API_KEY'  # 替换为你的 API Key
@@ -23,6 +22,22 @@ def load_markets_with_retry():
             st.stop()
 
 load_markets_with_retry()
+
+# 获取 USDT 现货交易对，日交易额超过 100 万 USDT 的交易对
+def get_active_usdt_symbols(min_volume=1000000):
+    """获取日交易额超过指定金额的 USDT 交易对"""
+    try:
+        tickers = exchange.fetch_tickers()  # 获取所有交易对的行情信息
+        active_symbols = []
+        for symbol, ticker in tickers.items():
+            if symbol.endswith('/USDT') and 'spot' in ticker.get('type', ''):
+                # 检查交易额是否超过指定值
+                if ticker.get('quoteVolume', 0) > min_volume:
+                    active_symbols.append(symbol)
+        return active_symbols
+    except Exception as e:
+        st.write(f"获取交易对时出错: {str(e)}")
+        return []
 
 # 获取指定交易对的历史数据
 def fetch_data(symbol, timeframe='4h', days=68):
@@ -157,16 +172,11 @@ def monitor_symbols(symbols):
         status_text.text(f"正在检测交易对: {symbol}")
 
 if __name__ == "__main__":
-    # 读取 symbols 文件
-    symbols_file_path = "symbols.txt"
-    if os.path.exists(symbols_file_path):
-        with open(symbols_file_path, "r") as file:
-            symbols = [line.strip() for line in file if line.strip()]
-    else:
-        symbols = []
-        st.error(f"文件 '{symbols_file_path}' 不存在！")
-
+    # 动态获取符合条件的交易对
+    st.title("交易对加载中...")
+    symbols = get_active_usdt_symbols()
     if symbols:
+        st.success(f"加载到 {len(symbols)} 个符合条件的交易对")
         monitor_symbols(symbols)
     else:
-        st.warning("未找到有效的交易对")
+        st.warning("未找到符合条件的交易对")
