@@ -9,8 +9,8 @@ import pygame
 import io
 
 # 初始化 gate.io 的 API
-api_key = 'YOUR_API_KEY'
-api_secret = 'YOUR_API_SECRET'
+api_key = '62b4392e8f9786f55a055161fe42f08f'
+api_secret = 'cd93bfa7dccd9d6e572f76295929ce7588b3e476848f9a963e6537e74fe6fc25'
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -140,8 +140,8 @@ async def monitor_symbols():
                 progress_bar.progress(progress)
                 status_text.text(f"检测进度: {index + 1}/{total_symbols} - 当前检测: {symbol}")
 
-                # 每个货币对检测的间隔为 2 秒（减少请求频率）
-                await asyncio.sleep(2)
+                # 每个货币对检测的间隔为 6 秒（减少请求频率）
+                await asyncio.sleep(6)
 
             except Exception as e:
                 st.write(f"{symbol} 错误: {str(e)}")
