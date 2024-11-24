@@ -67,7 +67,7 @@ def plot_chart(df, vwap, symbol):
 st.title("密集交易区计算工具")
 symbol = st.text_input("输入货币对 (如 BTC/USDT):", value="BTC/USDT")
 timeframe = st.selectbox("选择交易级别:", ["1m", "5m", "30m", "4h", "1d"], index=3)  # 添加 "1m" 选项，默认选择第4项 "4h"
-days = st.number_input("输入时间跨度 (天):", min_value=0, value=30)  # 允许天为0
+days = st.number_input("输入时间跨度 (天):", min_value=0, value=68)  # 允许天为0
 hours = st.number_input("输入时间跨度 (小时):", min_value=0, value=0, max_value=23)  # 限制在一天之内
 
 if st.button("确定"):
