@@ -18,7 +18,7 @@ exchange = ccxt.gateio({
 exchange.load_markets()
 
 
-def fetch_data(symbol, timeframe='4h', start_time=None, end_time=None):
+def fetch_data(symbol, timeframe='1m', start_time=None, end_time=None):
     """
     从交易所获取历史数据
     :param symbol: 交易对 (如 BTC/USDT)
