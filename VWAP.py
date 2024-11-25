@@ -103,17 +103,23 @@ symbol = st.text_input("输入货币对 (如 BTC/USDT):", value="BTC/USDT")
 # 用户选择时间级别
 timeframe = st.selectbox("选择交易级别:", ["1m", "5m", "30m", "4h", "1d"], index=3)
 
-# 用户输入起始和结束时间
-start_date = st.date_input("选择起始日期:", value=datetime.now(timezone.utc).date())
-start_time = st.time_input("选择起始时间:", value=datetime.now(timezone.utc).time())
-end_date = st.date_input("选择结束日期:", value=datetime.now(timezone.utc).date())
-end_time = st.time_input("选择结束时间:", value=datetime.now(timezone.utc).time())
+# 提示用户输入时间格式
+st.write("请输入起始和结束时间（格式：YYYY-MM-DD HH:MM，例如 2024-10-23 08:00）：")
 
-# 转换为 datetime 对象
-start_datetime = datetime.combine(start_date, start_time).replace(tzinfo=timezone.utc)
-end_datetime = datetime.combine(end_date, end_time).replace(tzinfo=timezone.utc)
+# 起始和结束时间通过文本框输入
+start_datetime_str = st.text_input("输入起始时间:", value="2024-11-25 08:00")
+end_datetime_str = st.text_input("输入结束时间:", value="2024-11-25 00:00")
 
-if st.button("确定"):
+# 转换字符串为 datetime 对象
+try:
+    start_datetime = datetime.strptime(start_datetime_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    end_datetime = datetime.strptime(end_datetime_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    valid_time = True
+except ValueError:
+    st.error("时间格式错误，请使用 YYYY-MM-DD HH:MM 格式输入。")
+    valid_time = False
+
+if st.button("确定") and valid_time:
     st.write(f"**输入的货币对为:** {symbol}")
     st.write(f"**选择的交易级别为:** {timeframe}")
     st.write(f"**时间跨度为:** 从 {start_datetime} 到 {end_datetime}")
