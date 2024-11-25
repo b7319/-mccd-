@@ -2,7 +2,6 @@ import ccxt
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
-import asyncio
 
 # 初始化 Gate.io API
 api_key = 'your_api_key'  # 替换为你的 API Key
@@ -19,7 +18,6 @@ def load_markets_with_retry():
             break
         except ccxt.NetworkError:
             st.write(f"网络错误，正在重试 ({attempt + 1}/3)...")
-            asyncio.sleep(5)
         except Exception as e:
             st.write(f"加载市场数据时出错: {str(e)}")
             st.stop()
@@ -28,8 +26,7 @@ def load_markets_with_retry():
 load_markets_with_retry()
 
 
-# 获取指定交易对的历史数据
-async def fetch_data(symbol, timeframe='1d', days=453):
+def fetch_data(symbol, timeframe='1d', days=453):
     """
     从交易所获取交易对的历史 K 线数据
     参数：
@@ -43,7 +40,7 @@ async def fetch_data(symbol, timeframe='1d', days=453):
         return None
     try:
         since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
-        ohlcvs = await asyncio.get_event_loop().run_in_executor(None, exchange.fetch_ohlcv, symbol, timeframe, since)
+        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since)
         df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Shanghai')
         df.set_index('timestamp', inplace=True)
@@ -57,12 +54,11 @@ async def fetch_data(symbol, timeframe='1d', days=453):
         return df
     except Exception as e:
         st.write(f"抓取 {symbol} 的数据时出错: {str(e)}")
-        await asyncio.sleep(1)
         return None
 
 
-# 计算密集成交区（VWAP）
 def calculate_vwap(df, days=453):
+    """计算 VWAP"""
     recent_data = df[-days:]
     if recent_data.empty:
         return None
@@ -70,8 +66,8 @@ def calculate_vwap(df, days=453):
     return round(vwap, 13)
 
 
-# 检查条件
 def check_conditions(df):
+    """检查条件"""
     if df.empty or len(df) < 3:
         return False, None, None, None
 
@@ -88,11 +84,11 @@ def check_conditions(df):
     return True, df.index[-1], latest_price, vwap
 
 
-async def get_high_volume_symbols():
+def get_high_volume_symbols():
     """
     筛选交易量超过 100 万 USDT 的交易对
     """
-    markets = await asyncio.get_event_loop().run_in_executor(None, exchange.fetch_tickers)
+    markets = exchange.fetch_tickers()
     symbols = [
         symbol for symbol, data in markets.items()
         if data['quoteVolume'] > 1_000_000 and '/USDT' in symbol
@@ -100,32 +96,31 @@ async def get_high_volume_symbols():
     return symbols
 
 
-async def monitor_symbols(symbols, progress_bar, status_text):
+def monitor_symbols(symbols, progress_bar, status_text):
+    """监控交易对"""
     num_symbols = len(symbols)
-    while True:
-        for index, symbol in enumerate(symbols):
-            current_time = datetime.now()
-            df = await fetch_data(symbol)
-            if df is not None and not df.empty:
-                condition_met, condition_time, latest_price, vwap = check_conditions(df)
-                if condition_met:
-                    st.write(f"交易对: {symbol}")
-                    st.write(f"时间周期: 1天")
-                    st.write(f"最新价格: {latest_price:.13f}")
-                    st.write(f"VWAP: {vwap:.13f}")
-                    st.write(f"检测到信号时间: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                    st.write("---")
+    for index, symbol in enumerate(symbols):
+        current_time = datetime.now()
+        df = fetch_data(symbol)
+        if df is not None and not df.empty:
+            condition_met, condition_time, latest_price, vwap = check_conditions(df)
+            if condition_met:
+                st.write(f"交易对: {symbol}")
+                st.write(f"时间周期: 1天")
+                st.write(f"最新价格: {latest_price:.13f}")
+                st.write(f"VWAP: {vwap:.13f}")
+                st.write(f"检测到信号时间: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                st.write("---")
 
-            progress_bar.progress((index + 1) / num_symbols)
-            status_text.text(f"正在检测交易对: {symbol}")
-            await asyncio.sleep(3)
+        progress_bar.progress((index + 1) / num_symbols)
+        status_text.text(f"正在检测交易对: {symbol}")
 
 
-async def main():
+def main():
     st.title('交易信号检测 - VWAP')
 
     st.write("正在加载高交易量交易对，请稍候...")
-    symbols = await get_high_volume_symbols()
+    symbols = get_high_volume_symbols()
 
     if not symbols:
         st.warning("未找到满足条件的交易对")
@@ -133,8 +128,8 @@ async def main():
         st.success("交易对加载成功！")
         progress_bar = st.progress(0)
         status_text = st.empty()
-        await monitor_symbols(symbols, progress_bar, status_text)
+        monitor_symbols(symbols, progress_bar, status_text)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
