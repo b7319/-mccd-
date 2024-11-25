@@ -104,11 +104,11 @@ symbol = st.text_input("输入货币对 (如 BTC/USDT):", value="BTC/USDT")
 timeframe = st.selectbox("选择交易级别:", ["1m", "5m", "30m", "4h", "1d"], index=3)
 
 # 提示用户输入时间格式
-st.write("请输入起始和结束时间（格式：YYYY/MM/DD HH:MM，例如 2025/11/25 08:00）：")
+st.write("请输入起始和结束时间（格式：YYYY/MM/DD HH:MM，例如 2024/11/25 08:00）：")
 
 # 起始和结束时间通过文本框输入
-start_datetime_str = st.text_input("输入起始时间:", value="2025/11/25 08:00")
-end_datetime_str = st.text_input("输入结束时间:", value="2025/11/25 08:00")
+start_datetime_str = st.text_input("输入起始时间:", value="2024/11/25 08:00")
+end_datetime_str = st.text_input("输入结束时间:", value="2024/11/25 08:00")
 
 # 转换字符串为 datetime 对象
 try:
