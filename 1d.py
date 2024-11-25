@@ -57,7 +57,7 @@ def fetch_data(symbol, timeframe='1d', days=453):
         return None
 
 
-def calculate_vwap(df, days=453):
+def calculate_vwap(df, days=170):
     """计算 VWAP"""
     recent_data = df[-days:]
     if recent_data.empty:
