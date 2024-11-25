@@ -107,13 +107,13 @@ timeframe = st.selectbox("选择交易级别:", ["1m", "5m", "30m", "4h", "1d"],
 st.write("请输入起始和结束时间（格式：YYYY/MM/DD HH:MM，例如 2024/10/23 08:00）：")
 
 # 起始和结束时间通过文本框输入
-start_datetime_str = st.text_input("输入起始时间:", value="2024/11/25 08:00")
+start_datetime_str = st.text_input("输入起始时间:", value="2024/10/23 08:00")
 end_datetime_str = st.text_input("输入结束时间:", value="2024/11/25 00:00")
 
 # 转换字符串为 datetime 对象
 try:
-    start_datetime = datetime.strptime(start_datetime_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-    end_datetime = datetime.strptime(end_datetime_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    start_datetime = datetime.strptime(start_datetime_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone.utc)
+    end_datetime = datetime.strptime(end_datetime_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone.utc)
     valid_time = True
 except ValueError:
     st.error("时间格式错误，请使用 YYYY/MM/DD HH:MM 格式输入。")
