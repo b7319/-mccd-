@@ -111,9 +111,9 @@ def main():
 
     # 用户输入 VWAP 计算时间跨度
     days = st.sidebar.slider("选择 VWAP 时间跨度（天）", min_value=30, max_value=180, value=90, step=10)
-    interval = st.sidebar.selectbox("检测间隔", options=["每日", "每小时"], index=0)
 
-    while True:
+    # 运行检测的按钮
+    if st.button("开始检测"):
         st.write("正在加载高交易量交易对，请稍候...")
         symbols = get_high_volume_symbols()
 
@@ -122,12 +122,6 @@ def main():
         else:
             st.success("交易对加载成功！")
             monitor_symbols(symbols, days=days)
-
-        # 根据用户选择的间隔休眠
-        if interval == "每日":
-            time.sleep(86400)  # 24 小时
-        elif interval == "每小时":
-            time.sleep(3600)  # 1 小时
 
 if __name__ == "__main__":
     main()
