@@ -109,19 +109,28 @@ def monitor_symbols(symbols, days=90):
 def main():
     st.title('长期交易信号检测 - VWAP')
 
-    # 用户输入 VWAP 计算时间跨度
+    # 用户输入 VWAP 计算时间跨度和检测间隔
     days = st.sidebar.slider("选择 VWAP 时间跨度（天）", min_value=30, max_value=180, value=90, step=10)
+    interval = st.sidebar.slider("检测间隔（分钟）", min_value=1, max_value=1440, value=60, step=5)  # 1分钟到24小时
 
-    # 运行检测的按钮
+    # 动态刷新显示结果
+    placeholder = st.empty()
+
     if st.button("开始检测"):
-        st.write("正在加载高交易量交易对，请稍候...")
-        symbols = get_high_volume_symbols()
+        while True:
+            with placeholder.container():
+                st.write("正在加载高交易量交易对，请稍候...")
+                symbols = get_high_volume_symbols()
 
-        if not symbols:
-            st.warning("未找到满足条件的交易对")
-        else:
-            st.success("交易对加载成功！")
-            monitor_symbols(symbols, days=days)
+                if not symbols:
+                    st.warning("未找到满足条件的交易对")
+                else:
+                    st.success("交易对加载成功！")
+                    monitor_symbols(symbols, days=days)
+
+                st.write(f"检测完成，等待 {interval} 分钟后进行下一次检测...")
+            
+            time.sleep(interval * 60)  # 按分钟换算为秒数
 
 if __name__ == "__main__":
     main()
