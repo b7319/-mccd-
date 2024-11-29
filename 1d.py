@@ -91,11 +91,13 @@ def monitor_symbols(symbols, days=90):
         if df is not None and not df.empty:
             condition_met, condition_time, latest_price, vwap = check_conditions(df)
             if condition_met:
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # 信号输出时间
                 st.write(f"交易对: {symbol}")
                 st.write(f"时间周期: 1天")
                 st.write(f"最新价格: {latest_price:.13f}")
                 st.write(f"VWAP: {vwap:.13f}")
                 st.write(f"信号时间: {condition_time}")
+                st.write(f"信号输出时间: {current_time}")
                 st.write("---")
         progress_bar.progress((index + 1) / num_symbols)
         status_text.text(f"正在检测交易对: {symbol}")
