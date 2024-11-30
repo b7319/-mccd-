@@ -78,7 +78,7 @@ def get_high_volume_symbols():
         st.write(f"获取高交易量交易对时出错: {str(e)}")
         return []
 
-def monitor_symbols(symbols, days=90):
+def monitor_symbols(symbols, days=90, result_container=None):
     """
     监控交易对
     """
@@ -92,13 +92,13 @@ def monitor_symbols(symbols, days=90):
             condition_met, condition_time, latest_price, vwap = check_conditions(df)
             if condition_met:
                 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # 信号输出时间
-                st.write(f"交易对: {symbol}")
-                st.write(f"时间周期: 1天")
-                st.write(f"最新价格: {latest_price:.13f}")
-                st.write(f"VWAP: {vwap:.13f}")
-                st.write(f"信号时间: {condition_time}")
-                st.write(f"信号输出时间: {current_time}")
-                st.write("---")
+                result_container.write(f"交易对: {symbol}")
+                result_container.write(f"时间周期: 1天")
+                result_container.write(f"最新价格: {latest_price:.13f}")
+                result_container.write(f"VWAP: {vwap:.13f}")
+                result_container.write(f"信号时间: {condition_time}")
+                result_container.write(f"信号输出时间: {current_time}")
+                result_container.write("---")
         progress_bar.progress((index + 1) / num_symbols)
         status_text.text(f"正在检测交易对: {symbol}")
         time.sleep(1)  # 避免 API 速率限制
@@ -114,23 +114,22 @@ def main():
     interval = st.sidebar.slider("检测间隔（分钟）", min_value=1, max_value=1440, value=60, step=5)  # 1分钟到24小时
 
     # 动态刷新显示结果
-    placeholder = st.empty()
+    result_container = st.container()
 
-    if st.button("开始检测"):
-        while True:
-            with placeholder.container():
-                st.write("正在加载高交易量交易对，请稍候...")
-                symbols = get_high_volume_symbols()
+    st.write("正在加载高交易量交易对，请稍候...")
+    symbols = get_high_volume_symbols()
 
-                if not symbols:
-                    st.warning("未找到满足条件的交易对")
-                else:
-                    st.success("交易对加载成功！")
-                    monitor_symbols(symbols, days=days)
+    if not symbols:
+        st.warning("未找到满足条件的交易对")
+        return
 
-                st.write(f"检测完成，等待 {interval} 分钟后进行下一次检测...")
-            
-            time.sleep(interval * 60)  # 按分钟换算为秒数
+    st.success("交易对加载成功！")
+
+    # 自动循环检测
+    while True:
+        monitor_symbols(symbols, days=days, result_container=result_container)
+        st.write(f"检测完成，等待 {interval} 分钟后进行下一次检测...")
+        time.sleep(interval * 60)  # 按分钟换算为秒数
 
 if __name__ == "__main__":
     main()
