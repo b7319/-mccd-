@@ -3,16 +3,11 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import asyncio
-import os
-import pygame
 
 # 初始化 Gate.io API
 api_key = 'your_api_key'  # 替换为你的 API Key
 api_secret = 'your_api_secret'  # 替换为你的 API Secret
 exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
-
-# 初始化 pygame 的音频系统，用于播放警报声音
-pygame.mixer.init()
 
 # 初始化交易市场数据，加载市场列表
 def load_markets_with_retry():
@@ -105,8 +100,6 @@ def display_result(res):
     st.write(f"MA7 波谷值: {res['ma7_valley']:.13f}")
     st.write(f"检测到信号时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.write("---")
-    pygame.mixer.music.load('D:\\\\pycharm_study\\\\y1314.wav')
-    pygame.mixer.music.play()
 
 async def monitor_symbols(symbols, progress_bar, status_text):
     num_symbols = len(symbols)
