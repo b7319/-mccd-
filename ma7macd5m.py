@@ -12,8 +12,7 @@ api_key = 'YOUR_API_KEY'
 api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
 
-# 初始化 pygame 音频系统，用于播放声音
-pygame.mixer.init()
+
 
 # 初始化交易市场
 def load_markets_with_retry():
@@ -94,8 +93,6 @@ def display_result(res):
     st.write(f"输出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.write("满足条件")
     st.write("---")
-    pygame.mixer.music.load('D:\\pycharm_study\\y2135.wav')
-    pygame.mixer.music.play()
 
 async def monitor_symbols(symbols, progress_bar, status_text):
     num_symbols = len(symbols)
