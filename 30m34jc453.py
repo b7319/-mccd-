@@ -148,7 +148,7 @@ async def monitor_symbols(symbols, progress_bar, status_text):
 
             progress_bar.progress((index + 1) / len(symbols))
             status_text.text(f"正在检测交易对: {symbol}")
-            await asyncio.sleep(6)  # 每检测一个交易对后等待 6 秒
+            await asyncio.sleep(13)  # 每检测一个交易对后等待 6 秒
 
 # 主函数
 async def main():
