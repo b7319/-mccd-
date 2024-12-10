@@ -3,16 +3,11 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import asyncio
-import os
-import pygame
 
 # 初始化 Gate.io API
 api_key = 'YOUR_API_KEY'  # 替换为你的 API Key
 api_secret = 'YOUR_API_SECRET'  # 替换为你的 API Secret
 exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
-
-# 初始化 pygame 的音频系统，用于播放警报声音
-pygame.mixer.init()
 
 # 初始化交易市场数据，加载市场列表
 def load_markets_with_retry():
@@ -29,6 +24,28 @@ def load_markets_with_retry():
             st.stop()
 
 load_markets_with_retry()
+
+# 获取日交易量超过 500 万 USDT 的交易对
+def get_high_volume_symbols():
+    """
+    从 Gate.io 市场中获取日交易量超过 500 万 USDT 的交易对。
+    返回：
+        list: 满足条件的交易对列表
+    """
+    try:
+        high_volume_symbols = []
+        tickers = exchange.fetch_tickers()
+        for symbol, data in tickers.items():
+            # 检查交易量（以 USDT 为基准）
+            base_volume = data.get('baseVolume', 0)
+            close_price = data.get('close', 0)
+            quote_volume = base_volume * close_price if close_price else 0
+            if quote_volume >= 5_000_000:  # 日交易量超过 500 万 USDT
+                high_volume_symbols.append(symbol)
+        return high_volume_symbols
+    except Exception as e:
+        st.write(f"获取高交易量交易对时出错: {str(e)}")
+        return []
 
 # 获取指定交易对的历史数据
 async def fetch_data(symbol, timeframe='4h', days=68):
@@ -131,8 +148,6 @@ def display_result(res):
     st.write(f"MA7最新值: {res['ma7_value']:.13f}")
     st.write(f"检测到信号时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.write("---")
-    pygame.mixer.music.load('D:\\\\pycharm_study\\\\y1314.wav')
-    pygame.mixer.music.play()
 
 async def monitor_symbols(symbols, progress_bar, status_text):
     num_symbols = len(symbols)
@@ -165,19 +180,11 @@ async def monitor_symbols(symbols, progress_bar, status_text):
 async def main():
     st.title('底分型与密集成交区检测 (4小时)')
 
-    symbols_file_path = 'D:\\\\pycharm_study\\\\symbols.txt'
-
-    if os.path.exists(symbols_file_path):
-        with open(symbols_file_path, 'r') as file:
-            symbols = [line.strip() for line in file if line.strip() and line.strip() in exchange.symbols]
-    else:
-        st.error(f"文件 '{symbols_file_path}' 不存在！")
-        symbols = []
-
+    symbols = get_high_volume_symbols()
     if not symbols:
-        st.warning("未在'symbols.txt'中找到有效的交易对")
+        st.warning("未找到满足条件的交易对")
     else:
-        st.success("交易对加载成功！")
+        st.success(f"加载 {len(symbols)} 个交易对成功！")
         progress_bar = st.progress(0)
         status_text = st.empty()
         await monitor_symbols(symbols, progress_bar, status_text)
