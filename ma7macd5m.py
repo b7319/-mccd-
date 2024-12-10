@@ -3,16 +3,12 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import asyncio
-import os
-import pygame
 import time
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
 api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
-
-
 
 # 初始化交易市场
 def load_markets_with_retry():
@@ -28,6 +24,19 @@ def load_markets_with_retry():
             st.stop()
 
 load_markets_with_retry()
+
+# 动态获取日交易额大于 500 万 USDT 的交易对
+async def get_symbols_with_volume(threshold=5_000_000):
+    try:
+        tickers = exchange.fetch_tickers()
+        symbols = [
+            symbol for symbol, data in tickers.items()
+            if 'quoteVolume' in data and data['quoteVolume'] >= threshold
+        ]
+        return symbols
+    except Exception as e:
+        st.error(f"获取交易对数据时出错: {str(e)}")
+        return []
 
 # 获取数据并计算MA7、MA170和MACD
 def fetch_data(symbol, timeframe='5m', max_bars=1000):
@@ -126,17 +135,11 @@ async def monitor_symbols(symbols, progress_bar, status_text):
 async def main():
     st.title('MA 和 MACD 筛选 (5分钟)')
 
-    symbols_file_path = 'D:\\pycharm_study\\TOP100.txt'
-
-    if os.path.exists(symbols_file_path):
-        with open(symbols_file_path, 'r') as file:
-            symbols = [line.strip() for line in file if line.strip() and line.strip() in exchange.symbols]
-    else:
-        st.error(f"文件 '{symbols_file_path}' 不存在！")
-        symbols = []
+    st.write("正在加载交易对，请稍候...")
+    symbols = await get_symbols_with_volume()
 
     if not symbols:
-        st.warning("未在'TOP100.txt'中找到有效的交易对")
+        st.warning("未找到日交易额超过 500 万 USDT 的交易对")
     else:
         st.success("交易对加载成功！")
         progress_bar = st.progress(0)
