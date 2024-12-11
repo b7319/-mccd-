@@ -83,16 +83,21 @@ def check_conditions(df):
     if df is None or len(df) < 453:
         return False, None
 
-    # Check MA7 trough in last 9 candles
+    # Check MA7 trough in last 9 candles above MA34
     last_9 = df.iloc[-9:]
     ma7_diff = last_9['ma7'].diff()
-    trough = (ma7_diff.shift(-1) > 0) & (ma7_diff < 0)
+    trough = (ma7_diff.shift(-1) > 0) & (ma7_diff < 0) & (last_9['ma7'] > last_9['ma34'])
 
     if not trough.any():
         return False, None
 
-    # Check MACD crossover in last 9 candles
-    macd_cross = (last_9['macd'] > last_9['signal']) & (last_9['macd'].shift(1) <= last_9['signal'].shift(1))
+    # Check MACD crossover in last 9 candles above zero line
+    macd_cross = (
+        (last_9['macd'] > last_9['signal']) &
+        (last_9['macd'].shift(1) <= last_9['signal'].shift(1)) &
+        (last_9['macd'] > 0)
+    )
+
     if not macd_cross.any():
         return False, None
 
@@ -137,7 +142,7 @@ async def monitor_symbols(symbols, progress_bar, status_text):
             df = fetch_data(symbol)
             if df is not None and not df.empty:
                 condition_met, condition_time = check_conditions(df)
-                if condition_met:
+                if condition_met and condition_time in df.index:
                     signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
                     if signal_key not in valid_signals:
                         valid_signals.add(signal_key)
@@ -145,7 +150,6 @@ async def monitor_symbols(symbols, progress_bar, status_text):
                         Symbol: {symbol}
                         Timeframe: 30m
                         Condition Met At: {condition_time.strftime('%Y-%m-%d %H:%M:%S')}
-                        VWAP: {df.loc[condition_time, 'vwap']:.2f}
                         """
                         send_email(f"Signal Notification - {symbol}", message)
                         detected_signals.append(message)
