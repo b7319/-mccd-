@@ -2,6 +2,7 @@ import ccxt
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
+import time
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
@@ -10,13 +11,16 @@ exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimi
 
 # 加载市场数据
 def load_markets_with_retry():
+    """
+    加载市场数据，最多重试 3 次。
+    """
     for attempt in range(3):
         try:
             exchange.load_markets()
             break
         except ccxt.NetworkError:
             st.write(f"网络错误，正在重试 ({attempt + 1}/3)...")
-            st.time.sleep(5)
+            time.sleep(5)
         except Exception as e:
             st.write(f"加载市场数据时出错: {str(e)}")
             st.stop()
@@ -25,6 +29,9 @@ load_markets_with_retry()
 
 # 获取所有日交易量大于500万USDT的交易对
 def get_high_volume_symbols():
+    """
+    筛选出所有日交易量大于 500 万 USDT 的交易对。
+    """
     high_volume_symbols = []
     try:
         tickers = exchange.fetch_tickers()
@@ -37,6 +44,14 @@ def get_high_volume_symbols():
 
 # 获取数据并计算MA、MACD等指标
 def fetch_data(symbol, timeframe='30m', max_bars=1000):
+    """
+    获取指定交易对的历史数据，并计算技术指标（MA 和 MACD）。
+    
+    :param symbol: 交易对符号
+    :param timeframe: 时间周期
+    :param max_bars: 最大数据条数
+    :return: 包含技术指标的 DataFrame
+    """
     if symbol not in exchange.symbols:
         return None
 
@@ -71,6 +86,12 @@ def fetch_data(symbol, timeframe='30m', max_bars=1000):
 
 # 筛选条件
 def check_conditions(df):
+    """
+    检查交易对是否满足筛选条件。
+    
+    :param df: 包含技术指标的 DataFrame
+    :return: 是否满足条件以及条件满足的时间
+    """
     if df is None or len(df) < 13:
         return False, None
 
@@ -103,6 +124,11 @@ valid_signals = set()
 
 # 显示结果
 def display_result(res):
+    """
+    显示满足条件的交易对信息。
+    
+    :param res: 包含交易对信息的字典
+    """
     st.write(f"交易对: {res['symbol']}")
     st.write(f"时间周期: {res['timeframe']}")
     st.write(f"满足条件的时间: {res['condition_time']}")
@@ -112,23 +138,38 @@ def display_result(res):
 
 # 监控交易对
 def monitor_symbols(symbols):
-    for symbol in symbols:
-        df = fetch_data(symbol)
-        if df is not None and not df.empty:
-            condition_met, condition_time = check_conditions(df)
-            if condition_met:
-                signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
-                if signal_key not in valid_signals:
-                    valid_signals.add(signal_key)
-                    symbol_data = {
-                        'symbol': symbol,
-                        'timeframe': '30分钟',
-                        'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    display_result(symbol_data)
+    """
+    循环检测交易对是否满足筛选条件。
+    
+    :param symbols: 交易对列表
+    """
+    num_symbols = len(symbols)
+    progress_bar = st.progress(0)  # 初始化进度条
+    while True:
+        for index, symbol in enumerate(symbols):
+            df = fetch_data(symbol)
+            if df is not None and not df.empty:
+                condition_met, condition_time = check_conditions(df)
+                if condition_met:
+                    signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    if signal_key not in valid_signals:
+                        valid_signals.add(signal_key)
+                        symbol_data = {
+                            'symbol': symbol,
+                            'timeframe': '30分钟',
+                            'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        display_result(symbol_data)
+
+            progress_bar.progress((index + 1) / num_symbols)
+            time.sleep(3)  # 每个交易对间隔 3 秒
+        progress_bar.progress(0)  # 完成一轮检测后重置进度条
 
 # 主程序
 def main():
+    """
+    主程序入口。
+    """
     st.title('MA34金叉MA453 筛选系统')
 
     symbols = get_high_volume_symbols()
