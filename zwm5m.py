@@ -70,22 +70,38 @@ def play_audio():
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
+# 滚动显示当前检测的交易对
+def display_scrolling_symbol(symbol_placeholder, current_symbol):
+    symbol_placeholder.write(f"**正在检测交易对：{current_symbol}**")
+
 # 主逻辑
 def main():
     st.title("实时交易检测 (5分钟级别)")
     st.markdown("---")
 
+    # 符合条件的交易对区域
+    st.header("符合条件的交易对")
+    results_placeholder = st.container()  # 用于动态更新符合条件的交易对
+
+    # 当前检测交易对滚动显示
+    symbol_placeholder = st.empty()
+
+    # 获取符合条件的交易对
     symbols = get_symbols_with_volume()
     if not symbols:
         st.warning("未找到符合条件的高交易额交易对")
         return
 
-    st.success(f"加载 {len(symbols)} 个交易对进行检测")
+    st.success(f"已加载 {len(symbols)} 个交易对，开始检测...")
     st.markdown("---")
 
+    # 实时检测交易对
     while True:
         for symbol in symbols:
-            st.write(f"正在检测交易对: {symbol}")
+            # 滚动显示当前检测的交易对
+            display_scrolling_symbol(symbol_placeholder, symbol)
+
+            # 获取最近15小时K线数据
             since_15h = exchange.parse8601((datetime.now(timezone.utc) - timedelta(hours=15)).isoformat())
             df = fetch_data(symbol, '5m', since=since_15h)
 
@@ -95,14 +111,18 @@ def main():
                 ma34_peak = df['ma34'].max()
                 ma170_min = df['ma170'].min()
 
-                # 条件判断
+                # 判断符合条件的交易对
                 if ma34_peak <= ma170_min <= ma7_valley:
-                    st.success(f"新结果: {symbol}")
-                    st.write(f"MA34 波峰值: {ma34_peak}")
-                    st.write(f"MA170 最低值: {ma170_min}")
-                    st.write(f"MA7 波谷值: {ma7_valley}")
-                    play_audio()  # 自动播放提示音
-            time.sleep(3)
+                    with results_placeholder:
+                        st.write(f"### 交易对: {symbol}")
+                        st.write(f"- **MA34 波峰值**: {ma34_peak}")
+                        st.write(f"- **MA170 最低值**: {ma170_min}")
+                        st.write(f"- **MA7 波谷值**: {ma7_valley}")
+                        st.write("---")
+                    play_audio()  # 播放音频提示
+
+            time.sleep(2)  # 每个交易对间隔2秒
+        time.sleep(180)  # 所有交易对检测完毕后等待3分钟
 
 if __name__ == "__main__":
     main()
