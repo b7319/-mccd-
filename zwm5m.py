@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import time
-import pygame
 import pytz
 
 # 初始化Gate.io API
@@ -16,8 +15,7 @@ exchange = ccxt.gateio({
     'timeout': 20000
 })
 
-# 初始化pygame音频系统
-pygame.mixer.init()
+# 音频路径
 alert_sound_url = 'http://www.btc131419.cn/wp-content/uploads/2024/12/y1148.wav'
 
 # 加载市场数据
@@ -148,9 +146,8 @@ def main():
                         st.write(f"MA170 最低值：{min_ma170} (发生时间: {convert_to_cst(min_ma170_time)})")
                         st.write(f"MA7 波谷值：{ma7_valley}")
                         st.write(f"是否合格：是")
+                        st.audio(alert_sound_url)
                         st.write("---")
-                    pygame.mixer.music.load(alert_sound_url)
-                    pygame.mixer.music.play()
                 else:
                     with col2:
                         st.write(f"交易对: {symbol}")
