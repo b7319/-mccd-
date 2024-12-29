@@ -5,8 +5,8 @@ import streamlit as st
 import time
 
 # 使用API密钥初始化gate.io API
-api_key = '405876b4bb875f8c780de71e03bb2541'
-api_secret = 'e0d65164f4f42867c49d55958242d3abd8f12e5df8704f7c03c27f177779bc9d'
+api_key = 'your_api_key'
+api_secret = 'your_api_secret'
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -14,37 +14,23 @@ exchange = ccxt.gateio({
     'timeout': 20000
 })
 
-# 尝试加载市场数据，最多重试3次
-def load_markets_with_retry():
-    for attempt in range(3):
-        try:
-            exchange.load_markets()
-            break
-        except ccxt.NetworkError as e:
-            st.write(f"网络错误，正在重试 ({attempt + 1}/3)...")
-            time.sleep(5)
-        except Exception as e:
-            st.write(f"加载市场数据时出错: {str(e)}")
-            st.stop()
+# 加载市场数据
+exchange.load_markets()
 
-load_markets_with_retry()
+# 获取日交易额超过1000万USDT的现货交易对
+def get_high_volume_symbols(threshold=10_000_000):
+    try:
+        tickers = exchange.fetch_tickers()
+        high_volume_symbols = [
+            symbol for symbol, data in tickers.items()
+            if 'spot' in data.get('type', '') and data['quoteVolume'] >= threshold
+        ]
+        return high_volume_symbols
+    except Exception as e:
+        st.error(f"获取高交易量交易对时出错: {e}")
+        return []
 
-# 筛选日交易额大于1000万USDT的现货交易对
-def get_high_volume_symbols():
-    symbols = []
-    for symbol in exchange.symbols:
-        try:
-            if '/' in symbol:  # 只保留现货交易对
-                ticker = exchange.fetch_ticker(symbol)
-                if 'USDT' in symbol and ticker['quoteVolume'] >= 10000000:  # 日交易额筛选条件
-                    symbols.append(symbol)
-        except ccxt.BaseError as e:
-            st.warning(f"获取 {symbol} 数据时出错: {str(e)}")
-        except Exception as e:
-            st.warning(f"其他错误 - 跳过交易对 {symbol}: {str(e)}")
-    return symbols
-
-# 获取交易对数据
+# 获取OHLCV数据
 def fetch_data(symbol, timeframe='4h', days=60):
     try:
         since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
@@ -53,90 +39,69 @@ def fetch_data(symbol, timeframe='4h', days=60):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
         df.set_index('timestamp', inplace=True)
         df['ma5'] = df['close'].rolling(window=5).mean()
-        if days == 60:
-            df['ma34'] = df['close'].rolling(window=34).mean()
-        elif days == 130:
-            df['ma170'] = df['close'].rolling(window=170).mean()
-        if df.isnull().any().any():  # 检查空值
-            return None
+        df['ma34'] = df['close'].rolling(window=34).mean()
+        df['ma170'] = df['close'].rolling(window=170).mean()
         return df
-    except ccxt.BaseError as e:
-        st.warning(f"获取 {symbol} 数据时出错: {str(e)}")
-        return None
     except Exception as e:
-        st.warning(f"其他错误 - 跳过交易对 {symbol}: {str(e)}")
+        st.write(f"获取 {symbol} 数据时出错: {str(e)}")
         return None
 
-# 找出MA34的有效波峰值
+# 找出MA34的波峰
 def find_ma34_peaks(df):
     peaks = []
-    valleys = []
     for i in range(34, len(df) - 1):
         if df['ma34'].iloc[i] > df['ma34'].iloc[i - 1] and df['ma34'].iloc[i] > df['ma34'].iloc[i + 1]:
-            peaks.append(i)
-        if df['ma34'].iloc[i] < df['ma34'].iloc[i - 1] and df['ma34'].iloc[i] < df['ma34'].iloc[i + 1]:
-            valleys.append(i)
-
-    valid_peaks = []
-    for peak in peaks:
-        left_valley = max([v for v in valleys if v < peak], default=None)
-        right_valley = min([v for v in valleys if v > peak], default=None)
-        if left_valley is not None and right_valley is not None:
-            left_crossing = (df['ma5'][left_valley:peak] < df['ma34'][left_valley:peak]).any() and \
-                            (df['ma5'][left_valley:peak] > df['ma34'][left_valley:peak]).any()
-            right_crossing = (df['ma5'][peak:right_valley] < df['ma34'][peak:right_valley]).any() and \
-                             (df['ma5'][peak:right_valley] > df['ma34'][peak:right_valley]).any()
-            if left_crossing or right_crossing:
-                valid_peaks.append(df['ma34'].iloc[peak])
-    return valid_peaks
-
-# 找出MA170的最低值
-def find_ma170_min(df):
-    return df['ma170'].min() if df is not None else None
+            peaks.append(df['ma34'].iloc[i])
+    return peaks
 
 # 获取最新价格
 def get_latest_price(df):
-    return df['close'].iloc[-1] if df is not None else None
+    return df['close'].iloc[-1]
 
-# 实时展示筛选结果
-def display_results():
-    symbols = get_high_volume_symbols()
+# 筛选满足条件的交易对
+def display_results(symbols):
     total_symbols = len(symbols)
+    detected = 0
     
-    if not symbols:
-        st.warning("没有找到满足条件的交易对")
-        return
+    for idx, symbol in enumerate(symbols):
+        st.write(f"正在检测交易对: {symbol} ({idx + 1}/{total_symbols})")
+        df = fetch_data(symbol, days=130)
+        if df is None or df.empty:
+            continue
 
-    st.title('实时交易对检测')
-    progress_placeholder = st.empty()
-    detected_placeholder = st.empty()
+        peaks = find_ma34_peaks(df)
+        ma170_min = df['ma170'].min()
+        latest_price = get_latest_price(df)
 
-    while True:
-        for i, symbol in enumerate(symbols):
-            progress_placeholder.write(f"检测进度: {i + 1}/{total_symbols} ({symbol})")
-            
-            df_60d = fetch_data(symbol, days=60)
-            df_130d = fetch_data(symbol, days=130)
+        if not peaks or ma170_min is None:
+            st.write(f"交易对 {symbol} 的数据不完整，跳过检测")
+            continue
 
-            if df_60d is None or df_130d is None:
-                st.warning(f"交易对 {symbol} 数据缺失，跳过...")
-                continue
+        min_peak_value = min(peaks)
+        condition = ma170_min >= min_peak_value and latest_price > df['ma170'].iloc[-1]
 
-            peaks = find_ma34_peaks(df_60d)
-            ma170_min = find_ma170_min(df_130d)
-            latest_price = get_latest_price(df_130d)
+        if condition:
+            detected += 1
+            st.write("---")
+            st.write(f"交易对: {symbol}")
+            st.write(f"最小MA34波峰值: {min_peak_value}")
+            st.write(f"最新MA170值: {df['ma170'].iloc[-1]}")
+            st.write(f"最新价格: {latest_price}")
+            st.write(f"条件满足时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            st.write("---")
 
-            if peaks and ma170_min is not None:
-                min_peak_value = min(peaks)
-                condition = ma170_min >= min_peak_value and latest_price > df_130d['ma170'].iloc[-1]
-                if condition:
-                    detected_placeholder.write(f"---\n交易对: {symbol}\n\n"
-                                              f"最小MA34波峰值: {min_peak_value}\n\n"
-                                              f"最新MA170值: {df_130d['ma170'].iloc[-1]}\n\n"
-                                              f"最新价格: {latest_price}\n\n"
-                                              f"条件满足时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n---")
+        time.sleep(0.5)
 
-        time.sleep(10)
+    st.write(f"检测完成，共找到 {detected}/{total_symbols} 个符合条件的交易对！")
 
 if __name__ == "__main__":
-    display_results()
+    st.title("实时交易对检测")
+
+    symbols = get_high_volume_symbols()
+    if not symbols:
+        st.error("未找到符合条件的现货交易对！")
+    else:
+        st.success(f"成功加载 {len(symbols)} 个交易对！")
+        while True:
+            display_results(symbols)
+            time.sleep(10)
