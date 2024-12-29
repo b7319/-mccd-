@@ -29,8 +29,21 @@ def load_markets_with_retry():
 
 load_markets_with_retry()
 
+# 获取符合条件的现货交易对
+def get_valid_spot_symbols():
+    valid_symbols = []
+    for symbol in exchange.symbols:
+        if "/USDT" in symbol and not any(x in symbol for x in [":", "-" ]):  # 排除期货和带选项的交易对
+            try:
+                ticker = exchange.fetch_ticker(symbol)
+                if ticker['quoteVolume'] is not None and ticker['quoteVolume'] >= 10_000_000:
+                    valid_symbols.append(symbol)
+            except Exception as e:
+                st.write(f"获取 {symbol} 日交易额时出错: {str(e)}")
+    return valid_symbols
+
 # 获取交易对数据
-def fetch_data(symbol, timeframe='5m', days=14):
+def fetch_data(symbol, timeframe='5m', days=3):
     if symbol not in exchange.symbols:
         return None
     try:
@@ -40,10 +53,8 @@ def fetch_data(symbol, timeframe='5m', days=14):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
         df.set_index('timestamp', inplace=True)
         df['ma5'] = df['close'].rolling(window=5).mean()
-        if days == 3:
-            df['ma34'] = df['close'].rolling(window=34).mean()
-        elif days == 14:
-            df['ma170'] = df['close'].rolling(window=170).mean()
+        df['ma34'] = df['close'].rolling(window=34).mean()
+        df['ma170'] = df['close'].rolling(window=170).mean()
         return df
     except Exception as e:
         st.write(f"获取 {symbol} 数据时出错: {str(e)}")
@@ -96,56 +107,72 @@ def get_latest_price(df):
 
 # 筛选满足条件的交易对并在Streamlit页面展示结果
 def display_result(res):
-    st.write(f"交易对: {res['symbol']}")
-    st.write(f"最小MA34波峰值: {res['min_ma34_peak']}")
-    st.write(f"最新MA170值: {res['ma170_latest']}")
-    st.write(f"最新价格: {res['latest_price']}")
-    st.write(f"条件满足时间: {res['time_detected']}")
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.write(f"交易对: {res['symbol']}")
+    with col2:
+        st.text_input("Symbol", value=res['symbol'], key=f"{res['symbol']}_copy", label_visibility="collapsed")
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.write(f"最小MA34波峰值: {res['min_ma34_peak']}")
+    with col2:
+        st.text_input("MA34 Peak", value=res['min_ma34_peak'], key=f"{res['symbol']}_ma34", label_visibility="collapsed")
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.write(f"最新MA170值: {res['ma170_latest']}")
+    with col2:
+        st.text_input("MA170 Latest", value=res['ma170_latest'], key=f"{res['symbol']}_ma170", label_visibility="collapsed")
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.write(f"最新价格: {res['latest_price']}")
+    with col2:
+        st.text_input("Latest Price", value=res['latest_price'], key=f"{res['symbol']}_price", label_visibility="collapsed")
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.write(f"条件满足时间: {res['time_detected']}")
+    with col2:
+        st.text_input("Time Detected", value=res['time_detected'], key=f"{res['symbol']}_time", label_visibility="collapsed")
+
+    st.write("条件满足")
     st.write("---")
 
 # 主逻辑
 def main():
     st.title('交易对MA34波峰和MA170最新值检测')
 
-    # 筛选日交易额大于1000万USDT的现货交易对
-    high_volume_symbols = []
-    for symbol in exchange.symbols:
-        if '/USDT' in symbol:
-            try:
-                ticker = exchange.fetch_ticker(symbol)
-                if ticker['quoteVolume'] >= 10_000_000:
-                    high_volume_symbols.append(symbol)
-            except Exception as e:
-                st.write(f"获取 {symbol} 日交易额时出错: {str(e)}")
+    symbols = get_valid_spot_symbols()
 
-    if len(high_volume_symbols) == 0:
-        st.warning("未找到符合条件的交易对！")
-        return
+    if len(symbols) == 0:
+        st.warning("未找到符合条件的现货交易对")
+    else:
+        st.success("交易对加载成功!")
 
-    st.success("符合条件的交易对加载成功!")
-
-    while True:
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        for symbol in high_volume_symbols:
-            df_3d = fetch_data(symbol, days=3)
-            df_14d = fetch_data(symbol, days=14)
-            if df_3d is not None and not df_3d.empty and df_14d is not None and not df_14d.empty:
-                peaks = find_ma34_peaks(df_3d)
-                ma170_min = find_ma170_min(df_14d)
-                latest_price = get_latest_price(df_14d)
-                if peaks:
-                    min_peak_value = min(peaks)
-                    condition = ma170_min >= min_peak_value and latest_price > df_14d['ma170'].iloc[-1]
-                    if condition:
-                        symbol_data = {
-                            'symbol': symbol,
-                            'min_ma34_peak': min_peak_value,
-                            'ma170_latest': df_14d['ma170'].iloc[-1],
-                            'latest_price': latest_price,
-                            'condition': condition,
-                            'time_detected': current_time
-                        }
-                        display_result(symbol_data)
+        while True:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for symbol in symbols:
+                df_3d = fetch_data(symbol, days=3)
+                df_14d = fetch_data(symbol, days=14)
+                if df_3d is not None and not df_3d.empty and df_14d is not None and not df_14d.empty:
+                    peaks = find_ma34_peaks(df_3d)
+                    ma170_min = find_ma170_min(df_14d)
+                    latest_price = get_latest_price(df_14d)
+                    if peaks:
+                        min_peak_value = min(peaks)
+                        condition = ma170_min >= min_peak_value and latest_price > df_14d['ma170'].iloc[-1]
+                        if condition:
+                            symbol_data = {
+                                'symbol': symbol,
+                                'min_ma34_peak': min_peak_value,
+                                'ma170_latest': df_14d['ma170'].iloc[-1],
+                                'latest_price': latest_price,
+                                'condition': condition,
+                                'time_detected': current_time
+                            }
+                            display_result(symbol_data)
 
 if __name__ == "__main__":
     main()
