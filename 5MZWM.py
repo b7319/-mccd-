@@ -3,8 +3,9 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import time
+import uuid  # 用于生成唯一ID
 
-# 使用API密钥初始化gate.io API
+# 初始化gate.io API
 api_key = 'c8e2fb89d031ca42a30ed7b674cb06dc'
 api_secret = 'fab0bc8aeebeb31e46238eda033e2b6258e9c9185f262f74d4472489f9f03219'
 exchange = ccxt.gateio({
@@ -76,14 +77,15 @@ def find_ma170_min(df):
 def get_latest_price(df):
     return df['close'].iloc[-1]
 
-# 筛选满足条件的交易对并在Streamlit页面展示结果
+# 展示筛选结果
 def display_result(res):
-    unique_id = f"{res['symbol']}_{res['time_detected']}"  # 使用交易对名称和检测时间生成唯一ID
+    unique_id = uuid.uuid4()  # 生成唯一标识符
     with st.expander(f"交易对: {res['symbol']}"):
-        st.text(f"最小MA34波峰值: {res['min_ma34_peak']}")
-        st.text(f"最新MA170值: {res['ma170_latest']}")
-        st.text(f"最新价格: {res['latest_price']}")
-        st.text(f"条件满足时间: {res['time_detected']}")
+        st.write(f"**最小MA34波峰值:** {res['min_ma34_peak']}")
+        st.write(f"**最新MA170值:** {res['ma170_latest']}")
+        st.write(f"**最新价格:** {res['latest_price']}")
+        st.write(f"**条件满足时间:** {res['time_detected']}")
+        st.text_input("Symbol", value=res['symbol'], key=f"{unique_id}_symbol")
 
 # 主逻辑
 def main():
@@ -118,8 +120,7 @@ def main():
                                 'time_detected': current_time
                             }
                             display_result(symbol_data)
-            time.sleep(10)  # 等待10秒以避免过多请求
+            time.sleep(10)  # 避免过多请求
 
 if __name__ == "__main__":
     main()
-
