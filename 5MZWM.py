@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import time
-import uuid  # 用于生成唯一ID
 
 # 初始化gate.io API
 api_key = 'c8e2fb89d031ca42a30ed7b674cb06dc'
@@ -79,13 +78,11 @@ def get_latest_price(df):
 
 # 展示筛选结果
 def display_result(res):
-    unique_id = uuid.uuid4()  # 生成唯一标识符
-    with st.expander(f"交易对: {res['symbol']}"):
+    with st.expander(f"交易对: {res['symbol']} ({res['time_detected']})"):
         st.write(f"**最小MA34波峰值:** {res['min_ma34_peak']}")
         st.write(f"**最新MA170值:** {res['ma170_latest']}")
         st.write(f"**最新价格:** {res['latest_price']}")
-        st.write(f"**条件满足时间:** {res['time_detected']}")
-        st.text_input("Symbol", value=res['symbol'], key=f"{unique_id}_symbol")
+        st.text_input("Symbol", value=res['symbol'], key=f"{res['symbol']}_{res['time_detected']}")
 
 # 主逻辑
 def main():
@@ -98,9 +95,13 @@ def main():
     else:
         st.success("交易对加载成功!")
 
+        processed_symbols = set()  # 用于存储已处理的交易对，避免重复展示
+
         while True:
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             for symbol in symbols:
+                if symbol in processed_symbols:
+                    continue
                 df_3d = fetch_data(symbol, days=3)
                 df_14d = fetch_data(symbol, days=14)
                 if df_3d is not None and not df_3d.empty and df_14d is not None and not df_14d.empty:
@@ -120,6 +121,7 @@ def main():
                                 'time_detected': current_time
                             }
                             display_result(symbol_data)
+                            processed_symbols.add(symbol)  # 标记为已处理
             time.sleep(10)  # 避免过多请求
 
 if __name__ == "__main__":
