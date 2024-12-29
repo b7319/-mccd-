@@ -5,8 +5,8 @@ import streamlit as st
 import time
 
 # 使用API密钥初始化gate.io API
-api_key = 'c8e2fb89d031ca42a30ed7b674cb06dc'
-api_secret = 'fab0bc8aeebeb31e46238eda033e2b6258e9c9185f262f74d4472489f9f03219'
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
