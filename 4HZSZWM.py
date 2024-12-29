@@ -101,16 +101,23 @@ def get_latest_price(df):
 # 实时展示筛选结果
 def display_results():
     symbols = get_high_volume_symbols()
+    total_symbols = len(symbols)
+    
     if not symbols:
         st.warning("没有找到满足条件的交易对")
         return
 
     st.title('实时交易对检测')
+    progress_placeholder = st.empty()
+    detected_placeholder = st.empty()
 
     while True:
-        for symbol in symbols:
+        for i, symbol in enumerate(symbols):
+            progress_placeholder.write(f"检测进度: {i + 1}/{total_symbols} ({symbol})")
+            
             df_60d = fetch_data(symbol, days=60)
             df_130d = fetch_data(symbol, days=130)
+
             if df_60d is None or df_130d is None:
                 st.warning(f"交易对 {symbol} 数据缺失，跳过...")
                 continue
@@ -123,13 +130,12 @@ def display_results():
                 min_peak_value = min(peaks)
                 condition = ma170_min >= min_peak_value and latest_price > df_130d['ma170'].iloc[-1]
                 if condition:
-                    st.write(f"交易对: {symbol}")
-                    st.write(f"{symbol}")
-                    st.write(f"最小MA34波峰值: {min_peak_value}")
-                    st.write(f"最新MA170值: {df_130d['ma170'].iloc[-1]}")
-                    st.write(f"最新价格: {latest_price}")
-                    st.write(f"条件满足时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    st.write("-" * 40)
+                    detected_placeholder.write(f"---\n交易对: {symbol}\n\n"
+                                              f"最小MA34波峰值: {min_peak_value}\n\n"
+                                              f"最新MA170值: {df_130d['ma170'].iloc[-1]}\n\n"
+                                              f"最新价格: {latest_price}\n\n"
+                                              f"条件满足时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n---")
+
         time.sleep(10)
 
 if __name__ == "__main__":
