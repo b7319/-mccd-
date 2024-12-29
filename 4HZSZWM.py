@@ -29,17 +29,19 @@ def load_markets_with_retry():
 
 load_markets_with_retry()
 
-# 筛选日交易额大于1000万USDT的交易对
+# 筛选日交易额大于1000万USDT的现货交易对
 def get_high_volume_symbols():
     symbols = []
     for symbol in exchange.symbols:
         try:
-            if ':' not in symbol:  # 过滤掉非现货交易对
+            if '/' in symbol:  # 只保留现货交易对
                 ticker = exchange.fetch_ticker(symbol)
                 if 'USDT' in symbol and ticker['quoteVolume'] >= 10000000:  # 日交易额筛选条件
                     symbols.append(symbol)
-        except Exception as e:
+        except ccxt.BaseError as e:
             st.warning(f"获取 {symbol} 数据时出错: {str(e)}")
+        except Exception as e:
+            st.warning(f"其他错误 - 跳过交易对 {symbol}: {str(e)}")
     return symbols
 
 # 获取交易对数据
@@ -58,8 +60,11 @@ def fetch_data(symbol, timeframe='4h', days=60):
         if df.isnull().any().any():  # 检查空值
             return None
         return df
-    except Exception as e:
+    except ccxt.BaseError as e:
         st.warning(f"获取 {symbol} 数据时出错: {str(e)}")
+        return None
+    except Exception as e:
+        st.warning(f"其他错误 - 跳过交易对 {symbol}: {str(e)}")
         return None
 
 # 找出MA34的有效波峰值
