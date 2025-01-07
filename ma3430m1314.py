@@ -203,9 +203,12 @@ def main():
                         if min_peak_value <= ma170_peak:  # 确保最小 MA34 波峰值在 MA170 波峰值下方
                             detection_time = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Shanghai')).strftime('%Y/%m/%d %H:%M')
 
-                            # 使用valley_value作为唯一标识，避免重复显示相同波谷值的交易对
-                            if valley_value not in st.session_state["displayed_results"]:
-                                st.session_state["displayed_results"][valley_value] = {
+                            # 将波谷值与交易对符合作为字典键
+                            key = f"{symbol}-{valley_value:.13f}"
+
+                            # 如果该波谷值尚未显示过，则显示
+                            if key not in st.session_state["displayed_results"]:
+                                st.session_state["displayed_results"][key] = {
                                     'symbol': symbol,
                                     'valley_value': valley_value,
                                     'valley_time': convert_to_cst(valley_time),
