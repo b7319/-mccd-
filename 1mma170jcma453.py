@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import streamlit as st
 import requests
 import pytz
+import time
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
@@ -78,16 +79,8 @@ def check_cross_conditions(df):
         if last_9['ma170'].iloc[i - 1] < last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] >= last_9['ma453'].iloc[i]:
             gold_cross_time = last_9.index[i]
-            gold_cross_value = last_9['ma170'].iloc[i]
-            break
-    else:
-        return False, None
 
-    # 判断金叉是否满足条件
-    if gold_cross_time is not None:
-        return True, gold_cross_time
-
-    return False, None
+    return bool(gold_cross_time), gold_cross_time
 
 # 检测死叉条件
 def check_death_cross_conditions(df):
@@ -101,27 +94,18 @@ def check_death_cross_conditions(df):
         if last_9['ma170'].iloc[i - 1] > last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] <= last_9['ma453'].iloc[i]:
             death_cross_time = last_9.index[i]
-            death_cross_value = last_9['ma170'].iloc[i]
-            break
-    else:
-        return False, None
 
-    # 判断死叉是否满足条件
-    if death_cross_time is not None:
-        return True, death_cross_time
-
-    return False, None
+    return bool(death_cross_time), death_cross_time
 
 valid_signals = set()
 
-# 播放音频（移除pygame）
+# 播放音频
 def play_alert_sound():
     audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
     audio_data = requests.get(audio_url).content
     with open('alert.wav', 'wb') as f:
         f.write(audio_data)
 
-    # 提示音频文件下载
     st.audio('alert.wav')
 
 # 显示结果
@@ -135,49 +119,49 @@ def display_result(res, signal_type):
 
 # 监控交易对
 def monitor_symbols(symbols):
-    num_symbols = len(symbols)
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    detected_text = st.empty()
-    detected_text.markdown("### 当前检测状态：")
+    while True:
+        num_symbols = len(symbols)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        detected_text = st.empty()
+        detected_text.markdown("### 当前检测状态：")
 
-    for index, symbol in enumerate(symbols):
-        # 滚动显示当前检测到的交易对
-        detected_text.markdown(f"### 正在检测交易对: {symbol}")
-        df = fetch_data(symbol, timeframe='1m', max_bars=1000)
-        if df is not None and not df.empty:
-            gold_cross_met, gold_cross_time = check_cross_conditions(df)
-            death_cross_met, death_cross_time = check_death_cross_conditions(df)
+        for index, symbol in enumerate(symbols):
+            detected_text.markdown(f"### 正在检测交易对: {symbol}")
+            df = fetch_data(symbol, timeframe='1m', max_bars=1000)
+            if df is not None and not df.empty:
+                gold_cross_met, gold_cross_time = check_cross_conditions(df)
+                death_cross_met, death_cross_time = check_death_cross_conditions(df)
 
-            if gold_cross_met:
-                signal_key = (symbol, gold_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
-                if signal_key not in valid_signals:
-                    valid_signals.add(signal_key)
-                    symbol_data = {
-                        'symbol': symbol,
-                        'condition_time': gold_cross_time.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    display_result(symbol_data, "金叉信号")
+                if gold_cross_met:
+                    signal_key = (symbol, gold_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    if signal_key not in valid_signals:
+                        valid_signals.add(signal_key)
+                        symbol_data = {
+                            'symbol': symbol,
+                            'condition_time': gold_cross_time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        display_result(symbol_data, "金叉信号")
 
-            if death_cross_met:
-                signal_key = (symbol, death_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
-                if signal_key not in valid_signals:
-                    valid_signals.add(signal_key)
-                    symbol_data = {
-                        'symbol': symbol,
-                        'condition_time': death_cross_time.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    display_result(symbol_data, "死叉信号")
+                if death_cross_met:
+                    signal_key = (symbol, death_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    if signal_key not in valid_signals:
+                        valid_signals.add(signal_key)
+                        symbol_data = {
+                            'symbol': symbol,
+                            'condition_time': death_cross_time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        display_result(symbol_data, "死叉信号")
 
-        # 更新进度条和状态
-        progress_bar.progress((index + 1) / num_symbols)
-        status_text.text(f"检测进度: {index + 1}/{num_symbols}")
+            progress_bar.progress((index + 1) / num_symbols)
+            status_text.text(f"检测进度: {index + 1}/{num_symbols}")
 
-    progress_bar.progress(0)
+        progress_bar.progress(0)
+        time.sleep(10)  # 每次循环后暂停 10 秒
 
 # 主程序
 def main():
-    st.title('高交易额现货 MA170 金叉 MA453 筛选系统')
+    st.title('高交易额现货 MA170 金叉/死叉 MA453 筛选系统')
 
     symbols = get_high_volume_symbols()
 
@@ -186,7 +170,7 @@ def main():
     else:
         st.success(f"成功加载 {len(symbols)} 个交易对！")
         st.write(f"正在检测中，交易对总数: {len(symbols)}")
-        monitor_symbols(symbols)  # 直接使用同步方法进行监控
+        monitor_symbols(symbols)
 
 if __name__ == "__main__":
     main()
