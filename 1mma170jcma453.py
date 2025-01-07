@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import streamlit as st
 import requests
 import pygame
+import pytz
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
@@ -12,6 +13,9 @@ exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimi
 
 # 初始化 pygame 音频系统，用于播放声音
 pygame.mixer.init()
+
+# 北京时间
+beijing_tz = pytz.timezone('Asia/Shanghai')
 
 # 加载市场数据
 def load_markets_with_retry():
@@ -106,7 +110,7 @@ def play_alert_sound():
 def display_result(res):
     st.write(f"交易对: {res['symbol']}")
     st.write(f"满足条件的时间: {res['condition_time']}")
-    st.write(f"输出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.write(f"输出时间: {datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')}")
     st.write("---")
     play_alert_sound()
 
@@ -118,28 +122,27 @@ def monitor_symbols(symbols):
     detected_text = st.empty()
     detected_text.markdown("### 当前检测状态：")
 
-    while True:
-        for index, symbol in enumerate(symbols):
-            # 滚动显示当前检测到的交易对
-            detected_text.markdown(f"### 正在检测交易对: {symbol}")
-            df = fetch_data(symbol, timeframe='1m', max_bars=1000)
-            if df is not None and not df.empty:
-                condition_met, condition_time = check_cross_conditions(df)
-                if condition_met:
-                    signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
-                    if signal_key not in valid_signals:
-                        valid_signals.add(signal_key)
-                        symbol_data = {
-                            'symbol': symbol,
-                            'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S')
-                        }
-                        display_result(symbol_data)
+    for index, symbol in enumerate(symbols):
+        # 滚动显示当前检测到的交易对
+        detected_text.markdown(f"### 正在检测交易对: {symbol}")
+        df = fetch_data(symbol, timeframe='1m', max_bars=1000)
+        if df is not None and not df.empty:
+            condition_met, condition_time = check_cross_conditions(df)
+            if condition_met:
+                signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
+                if signal_key not in valid_signals:
+                    valid_signals.add(signal_key)
+                    symbol_data = {
+                        'symbol': symbol,
+                        'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    display_result(symbol_data)
 
-            # 更新进度条和状态
-            progress_bar.progress((index + 1) / num_symbols)
-            status_text.text(f"检测进度: {index + 1}/{num_symbols}")
+        # 更新进度条和状态
+        progress_bar.progress((index + 1) / num_symbols)
+        status_text.text(f"检测进度: {index + 1}/{num_symbols}")
 
-        progress_bar.progress(0)
+    progress_bar.progress(0)
 
 # 主程序
 def main():
