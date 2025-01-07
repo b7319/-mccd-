@@ -3,11 +3,15 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import requests
+import pygame
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
 api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
+
+# 初始化 pygame 音频系统，用于播放声音
+pygame.mixer.init()
 
 # 加载市场数据
 def load_markets_with_retry():
@@ -91,7 +95,12 @@ valid_signals = set()
 def play_alert_sound():
     audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
     audio_data = requests.get(audio_url).content
-    st.audio(audio_data, format="audio/wav", use_container_width=False)
+    with open('alert.wav', 'wb') as f:
+        f.write(audio_data)
+
+    # 使用 pygame 播放音频
+    pygame.mixer.music.load('alert.wav')
+    pygame.mixer.music.play()
 
 # 显示结果
 def display_result(res):
