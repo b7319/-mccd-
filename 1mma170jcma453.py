@@ -36,12 +36,11 @@ def get_high_volume_symbols():
     symbols = []
     markets = exchange.fetch_markets()  # 返回一个包含市场信息的列表
     for market in markets:
-        # 确保交易对可用并且是现货市场，基准货币为 USDT
         if market.get('active', False) and market.get('type') == 'spot' and market.get('quote') == 'USDT':
             symbol = market['symbol']
             try:
-                ticker = exchange.fetch_ticker(symbol)  # 获取交易对的最新信息
-                if ticker.get('quoteVolume', 0) >= 5_000_000:  # 检查日交易额是否超过 500 万 USDT
+                ticker = exchange.fetch_ticker(symbol)
+                if ticker.get('quoteVolume', 0) >= 5_000_000:
                     symbols.append(symbol)
             except ccxt.BaseError as e:
                 st.write(f"跳过无效交易对 {symbol}: {str(e)}")
@@ -73,24 +72,21 @@ def fetch_data(symbol, timeframe='1m', max_bars=1000):
 # 检测金叉和死叉条件
 def check_cross_conditions(df):
     if df is None or len(df) < 453:
-        return False, None, None  # 返回金叉时间和死叉时间
+        return None, None
 
-    # 检测最新的 9 根 K 线内是否发生金叉
     last_9 = df.iloc[-9:]
     gold_cross_time = None
     death_cross_time = None
+
     for i in range(1, len(last_9)):
-        # 检查金叉 (MA170 上穿 MA453)
         if last_9['ma170'].iloc[i - 1] < last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] >= last_9['ma453'].iloc[i]:
             gold_cross_time = last_9.index[i]
 
-        # 检查死叉 (MA170 下穿 MA453)
         if last_9['ma170'].iloc[i - 1] > last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] <= last_9['ma453'].iloc[i]:
             death_cross_time = last_9.index[i]
 
-    # 返回金叉和死叉时间
     return gold_cross_time, death_cross_time
 
 valid_signals = set()
@@ -102,16 +98,14 @@ def play_alert_sound():
     with open('alert.wav', 'wb') as f:
         f.write(audio_data)
 
-    # 使用 pygame 播放音频
     pygame.mixer.music.load('alert.wav')
     pygame.mixer.music.play()
 
 # 显示结果
 def display_result(res, signal_type):
     st.write(f"交易对: {res['symbol']}")
-    st.write(f"满足条件的时间: {res['condition_time']}")
+    st.write(f"满足条件的时间: {res['condition_time']} ({signal_type})")
     st.write(f"输出时间: {datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')}")
-    st.write(f"信号类型: {signal_type}")  # 显示信号类型 (金叉或死叉)
     st.write("---")
     play_alert_sound()
 
@@ -124,11 +118,11 @@ def monitor_symbols(symbols):
     detected_text.markdown("### 当前检测状态：")
 
     for index, symbol in enumerate(symbols):
-        # 滚动显示当前检测到的交易对
         detected_text.markdown(f"### 正在检测交易对: {symbol}")
         df = fetch_data(symbol, timeframe='1m', max_bars=1000)
         if df is not None and not df.empty:
             gold_cross_time, death_cross_time = check_cross_conditions(df)
+
             if gold_cross_time:
                 signal_key = (symbol, gold_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
                 if signal_key not in valid_signals:
@@ -137,7 +131,7 @@ def monitor_symbols(symbols):
                         'symbol': symbol,
                         'condition_time': gold_cross_time.strftime('%Y-%m-%d %H:%M:%S')
                     }
-                    display_result(symbol_data, "金叉")
+                    display_result(symbol_data, "金叉信号")
 
             if death_cross_time:
                 signal_key = (symbol, death_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
@@ -147,9 +141,8 @@ def monitor_symbols(symbols):
                         'symbol': symbol,
                         'condition_time': death_cross_time.strftime('%Y-%m-%d %H:%M:%S')
                     }
-                    display_result(symbol_data, "死叉")
+                    display_result(symbol_data, "死叉信号")
 
-        # 更新进度条和状态
         progress_bar.progress((index + 1) / num_symbols)
         status_text.text(f"检测进度: {index + 1}/{num_symbols}")
 
@@ -157,7 +150,7 @@ def monitor_symbols(symbols):
 
 # 主程序
 def main():
-    st.title('高交易额现货 MA170 金叉 MA453 筛选系统')
+    st.title('高交易额现货 MA170 金叉/死叉 MA453 筛选系统')
 
     symbols = get_high_volume_symbols()
 
@@ -166,7 +159,7 @@ def main():
     else:
         st.success(f"成功加载 {len(symbols)} 个交易对！")
         st.write(f"正在检测中，交易对总数: {len(symbols)}")
-        monitor_symbols(symbols)  # 直接使用同步方法进行监控
+        monitor_symbols(symbols)
 
 if __name__ == "__main__":
     main()
