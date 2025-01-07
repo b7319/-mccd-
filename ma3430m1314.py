@@ -43,7 +43,7 @@ def get_market_volume(symbol):
     except Exception as e:
         return None
 
-def get_eligible_symbols(min_volume_usdt=5000000):
+def get_eligible_symbols(min_volume_usdt=3000000):
     """
     获取24小时交易量超过min_volume_usdt的现货USDT交易对。
     """
