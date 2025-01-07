@@ -208,8 +208,6 @@ def main():
                                     'valley_value': valley_value,
                                     'valley_time': convert_to_cst(valley_time),
                                     'min_peak_value': min_peak_value,
-                                    'min
-                                    'min_peak_value': min_peak_value,
                                     'min_peak_time': convert_to_cst(min_peak_time),
                                     'detection_time': detection_time
                                 })
