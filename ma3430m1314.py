@@ -155,7 +155,7 @@ def main():
 
     # 确保在访问前初始化 session_state 中的 displayed_results
     if "displayed_results" not in st.session_state:
-        st.session_state["displayed_results"] = []
+        st.session_state["displayed_results"] = {}
 
     results_container = st.container()
     progress_container = st.empty()
@@ -203,27 +203,25 @@ def main():
                         if min_peak_value <= ma170_peak:  # 确保最小 MA34 波峰值在 MA170 波峰值下方
                             detection_time = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Shanghai')).strftime('%Y/%m/%d %H:%M')
 
-                            with results_container:
-                                # 确保 session_state["displayed_results"] 是一个列表
-                                if not isinstance(st.session_state["displayed_results"], list):
-                                    st.session_state["displayed_results"] = []
-
-                                st.session_state["displayed_results"].append({
+                            # 使用valley_value作为唯一标识，避免重复显示相同波谷值的交易对
+                            if valley_value not in st.session_state["displayed_results"]:
+                                st.session_state["displayed_results"][valley_value] = {
                                     'symbol': symbol,
                                     'valley_value': valley_value,
                                     'valley_time': convert_to_cst(valley_time),
                                     'min_peak_value': min_peak_value,
                                     'min_peak_time': convert_to_cst(min_peak_time),
                                     'detection_time': detection_time
-                                })
-                                # 每次显示新的结果，不会覆盖旧结果
-                                for result in st.session_state["displayed_results"]:
-                                    st.write(f"### 交易对: {result['symbol']}")
-                                    st.write(f"波谷值：{result['valley_value']:.13f}, 时间：{result['valley_time']}")
-                                    st.write(f"最小波峰值：{result['min_peak_value']:.13f}, 时间：{result['min_peak_time']}")
-                                    st.write(f"条件满足时间：{result['valley_time']}")
-                                    st.write(f"检测并输出时间: {result['detection_time']}")
-                                    st.markdown("---")
+                                }
+
+                            # 每次显示新的结果，不会覆盖旧结果
+                            for result in st.session_state["displayed_results"].values():
+                                st.write(f"### 交易对: {result['symbol']}")
+                                st.write(f"波谷值：{result['valley_value']:.13f}, 时间：{result['valley_time']}")
+                                st.write(f"最小波峰值：{result['min_peak_value']:.13f}, 时间：{result['min_peak_time']}")
+                                st.write(f"条件满足时间：{result['valley_time']}")
+                                st.write(f"检测并输出时间: {result['detection_time']}")
+                                st.markdown("---")
 
             time.sleep(0)  # 每个交易对无停顿
 
