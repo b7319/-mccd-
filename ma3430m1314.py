@@ -155,7 +155,7 @@ def main():
 
     # 确保在访问前初始化 session_state 中的 displayed_results
     if "displayed_results" not in st.session_state:
-        st.session_state["displayed_results"] = set()  # 使用 set 来存储已显示的波谷值
+        st.session_state["displayed_results"] = []  # 使用 list 来存储已显示的波谷值
 
     results_container = st.container()
     progress_container = st.empty()
@@ -207,8 +207,19 @@ def main():
                             key = f"{symbol}-{valley_value:.13f}"
 
                             # 如果该波谷值尚未显示过，则显示
-                            if key not in st.session_state["displayed_results"]:
-                                st.session_state["displayed_results"].add(key)  # 记录已显示的波谷值
+                            if key not in [item['key'] for item in st.session_state["displayed_results"]]:
+                                # 记录已显示的波谷值
+                                st.session_state["displayed_results"].append({
+                                    'key': key,
+                                    'symbol': symbol,
+                                    'valley_value': valley_value,
+                                    'valley_time': valley_time,
+                                    'min_peak_value': min_peak_value,
+                                    'min_peak_time': min_peak_time,
+                                    'detection_time': detection_time
+                                })
+
+                                # 更新页面展示
                                 with results_container:
                                     st.write(f"### 交易对: {symbol}")
                                     st.write(f"波谷值：{valley_value:.13f}, 时间：{convert_to_cst(valley_time)}")
