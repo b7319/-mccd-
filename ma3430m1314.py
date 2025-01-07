@@ -198,19 +198,19 @@ def main():
                 for valley_time, valley_value in valleys:
                     ma170_valley = df.loc[valley_time]['MA170']
                     if valley_value >= ma170_valley:
-                        ma170_peak = df.loc[min_peak_time]['MA170']
-                        if min_peak_value <= ma170_peak:
-                            detection_time = datetime.now().strftime('%Y/%m/%d %H:%M')
+    ma170_peak = df.loc[min_peak_time]['MA170']
+    if min_peak_value <= ma170_peak:  # 确保最小 MA34 波峰值在 MA170 波峰值下方
+        detection_time = datetime.now().strftime('%Y/%m/%d %H:%M')
 
-                            with results_container:
-                                if symbol not in st.session_state["displayed_results"]:
-                                    st.session_state["displayed_results"].add(symbol)
-                                    st.write(f"### 交易对: {symbol}")
-                                    st.write(f"波谷值：{valley_value:.13f}, 时间：{convert_to_cst(valley_time)}")
-                                    st.write(f"最小波峰值：{min_peak_value:.13f}, 时间：{convert_to_cst(min_peak_time)}")
-                                    st.write(f"条件满足时间：{convert_to_cst(valley_time)}")
-                                    st.write(f"检测并输出时间: {detection_time}")
-                                    st.markdown("---")
+        with results_container:
+            if symbol not in st.session_state["displayed_results"]:
+                st.session_state["displayed_results"].add(symbol)
+                st.write(f"### 交易对: {symbol}")
+                st.write(f"波谷值：{valley_value:.13f}, 时间：{convert_to_cst(valley_time)}")
+                st.write(f"最小波峰值：{min_peak_value:.13f}, 时间：{convert_to_cst(min_peak_time)}")
+                st.write(f"条件满足时间：{convert_to_cst(valley_time)}")
+                st.write(f"检测并输出时间: {detection_time}")
+                st.markdown("---")
 
             time.sleep(0)  # 每个交易对无停顿
 
