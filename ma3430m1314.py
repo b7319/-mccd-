@@ -1,4 +1,4 @@
-import ccxt 
+import ccxt
 import pandas as pd
 from datetime import datetime
 import streamlit as st
@@ -153,6 +153,7 @@ def main():
 
     st.write("正在加载符合条件的交易对...")
 
+    # 确保在访问前初始化 session_state 中的 displayed_results
     if "displayed_results" not in st.session_state:
         st.session_state["displayed_results"] = []
 
@@ -203,6 +204,10 @@ def main():
                             detection_time = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Shanghai')).strftime('%Y/%m/%d %H:%M')
 
                             with results_container:
+                                # 确保 session_state["displayed_results"] 是一个列表
+                                if not isinstance(st.session_state["displayed_results"], list):
+                                    st.session_state["displayed_results"] = []
+
                                 st.session_state["displayed_results"].append({
                                     'symbol': symbol,
                                     'valley_value': valley_value,
