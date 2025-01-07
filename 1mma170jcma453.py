@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import requests
-import pygame
 import pytz
 import time
 
@@ -11,9 +10,6 @@ import time
 api_key = 'YOUR_API_KEY'
 api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
-
-# 初始化 pygame 音频系统，用于播放声音
-pygame.mixer.init()
 
 # 北京时间
 beijing_tz = pytz.timezone('Asia/Shanghai')
@@ -112,9 +108,8 @@ def play_alert_sound():
     with open('alert.wav', 'wb') as f:
         f.write(audio_data)
 
-    # 使用 pygame 播放音频
-    pygame.mixer.music.load('alert.wav')
-    pygame.mixer.music.play()
+    # 使用 Streamlit 播放音频
+    st.audio('alert.wav', format='audio/wav')
 
 # 显示结果
 def display_result(res):
