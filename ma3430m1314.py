@@ -155,7 +155,7 @@ def main():
 
     # 确保在访问前初始化 session_state 中的 displayed_results
     if "displayed_results" not in st.session_state:
-        st.session_state["displayed_results"] = {}
+        st.session_state["displayed_results"] = set()  # 使用 set 来存储已显示的波谷值
 
     results_container = st.container()
     progress_container = st.empty()
@@ -208,23 +208,14 @@ def main():
 
                             # 如果该波谷值尚未显示过，则显示
                             if key not in st.session_state["displayed_results"]:
-                                st.session_state["displayed_results"][key] = {
-                                    'symbol': symbol,
-                                    'valley_value': valley_value,
-                                    'valley_time': convert_to_cst(valley_time),
-                                    'min_peak_value': min_peak_value,
-                                    'min_peak_time': convert_to_cst(min_peak_time),
-                                    'detection_time': detection_time
-                                }
-
-                            # 每次显示新的结果，不会覆盖旧结果
-                            for result in st.session_state["displayed_results"].values():
-                                st.write(f"### 交易对: {result['symbol']}")
-                                st.write(f"波谷值：{result['valley_value']:.13f}, 时间：{result['valley_time']}")
-                                st.write(f"最小波峰值：{result['min_peak_value']:.13f}, 时间：{result['min_peak_time']}")
-                                st.write(f"条件满足时间：{result['valley_time']}")
-                                st.write(f"检测并输出时间: {result['detection_time']}")
-                                st.markdown("---")
+                                st.session_state["displayed_results"].add(key)  # 记录已显示的波谷值
+                                with results_container:
+                                    st.write(f"### 交易对: {symbol}")
+                                    st.write(f"波谷值：{valley_value:.13f}, 时间：{convert_to_cst(valley_time)}")
+                                    st.write(f"最小波峰值：{min_peak_value:.13f}, 时间：{convert_to_cst(min_peak_time)}")
+                                    st.write(f"条件满足时间：{convert_to_cst(valley_time)}")
+                                    st.write(f"检测并输出时间: {detection_time}")
+                                    st.markdown("---")
 
             time.sleep(0)  # 每个交易对无停顿
 
