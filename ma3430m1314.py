@@ -155,7 +155,7 @@ def main():
 
     # 确保在访问前初始化 session_state 中的 displayed_results
     if "displayed_results" not in st.session_state:
-        st.session_state["displayed_results"] = []  # 初始化为列表而不是set
+        st.session_state["displayed_results"] = []  # 初始化为空列表
 
     results_container = st.container()
     progress_container = st.empty()
@@ -208,7 +208,6 @@ def main():
 
                             # 如果该波谷值尚未显示过，则显示
                             if not any(item['key'] == key for item in st.session_state["displayed_results"]):
-                                # 记录已显示的波谷值
                                 st.session_state["displayed_results"].append({
                                     'key': key,
                                     'symbol': symbol,
