@@ -70,28 +70,28 @@ def fetch_data(symbol, timeframe='1m', max_bars=1000):
         st.write(f"抓取 {symbol} 的数据时出错: {str(e)}")
         return None
 
-# 检测金叉条件
+# 检测金叉和死叉条件
 def check_cross_conditions(df):
     if df is None or len(df) < 453:
-        return False, None
+        return False, None, None  # 返回金叉时间和死叉时间
 
     # 检测最新的 9 根 K 线内是否发生金叉
     last_9 = df.iloc[-9:]
     gold_cross_time = None
+    death_cross_time = None
     for i in range(1, len(last_9)):
+        # 检查金叉 (MA170 上穿 MA453)
         if last_9['ma170'].iloc[i - 1] < last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] >= last_9['ma453'].iloc[i]:
             gold_cross_time = last_9.index[i]
-            gold_cross_value = last_9['ma170'].iloc[i]
-            break
-    else:
-        return False, None
 
-    # 判断金叉是否满足条件
-    if gold_cross_time is not None:
-        return True, gold_cross_time
+        # 检查死叉 (MA170 下穿 MA453)
+        if last_9['ma170'].iloc[i - 1] > last_9['ma453'].iloc[i - 1] and \
+           last_9['ma170'].iloc[i] <= last_9['ma453'].iloc[i]:
+            death_cross_time = last_9.index[i]
 
-    return False, None
+    # 返回金叉和死叉时间
+    return gold_cross_time, death_cross_time
 
 valid_signals = set()
 
@@ -107,10 +107,11 @@ def play_alert_sound():
     pygame.mixer.music.play()
 
 # 显示结果
-def display_result(res):
+def display_result(res, signal_type):
     st.write(f"交易对: {res['symbol']}")
     st.write(f"满足条件的时间: {res['condition_time']}")
     st.write(f"输出时间: {datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    st.write(f"信号类型: {signal_type}")  # 显示信号类型 (金叉或死叉)
     st.write("---")
     play_alert_sound()
 
@@ -127,16 +128,26 @@ def monitor_symbols(symbols):
         detected_text.markdown(f"### 正在检测交易对: {symbol}")
         df = fetch_data(symbol, timeframe='1m', max_bars=1000)
         if df is not None and not df.empty:
-            condition_met, condition_time = check_cross_conditions(df)
-            if condition_met:
-                signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
+            gold_cross_time, death_cross_time = check_cross_conditions(df)
+            if gold_cross_time:
+                signal_key = (symbol, gold_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
                 if signal_key not in valid_signals:
                     valid_signals.add(signal_key)
                     symbol_data = {
                         'symbol': symbol,
-                        'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S')
+                        'condition_time': gold_cross_time.strftime('%Y-%m-%d %H:%M:%S')
                     }
-                    display_result(symbol_data)
+                    display_result(symbol_data, "金叉")
+
+            if death_cross_time:
+                signal_key = (symbol, death_cross_time.strftime('%Y-%m-%d %H:%M:%S'))
+                if signal_key not in valid_signals:
+                    valid_signals.add(signal_key)
+                    symbol_data = {
+                        'symbol': symbol,
+                        'condition_time': death_cross_time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    display_result(symbol_data, "死叉")
 
         # 更新进度条和状态
         progress_bar.progress((index + 1) / num_symbols)
