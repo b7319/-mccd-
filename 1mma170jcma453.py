@@ -28,27 +28,19 @@ def load_markets_with_retry():
 
 load_markets_with_retry()
 
-# 筛选出日交易额超过 500 万 USDT 的现货交易对
-def get_high_volume_symbols():
+# 获取前300日交易额最大的交易对
+def get_top_300_volume_symbols():
     symbols = []
-    markets = exchange.fetch_markets()  # 返回一个包含市场信息的列表
-    for market in markets:
-        # 确保交易对可用并且是现货市场，基准货币为 USDT
-        if market.get('active', False) and market.get('type') == 'spot' and market.get('quote') == 'USDT':
-            symbol = market['symbol']
-            try:
-                ticker = exchange.fetch_ticker(symbol)  # 获取交易对的最新信息
-                if ticker.get('quoteVolume', 0) >= 5_000_000:  # 检查日交易额是否超过 500 万 USDT
-                    symbols.append(symbol)
-            except ccxt.BaseError as e:
-                # 如果请求超限或其他错误，跳过该交易对
-                if 'label' in str(e) and 'TOO_MANY_REQUESTS' in str(e):
-                    st.write(f"跳过无效交易对 {symbol}: {str(e)}")
-                    continue
-                else:
-                    st.write(f"跳过无效交易对 {symbol}: {str(e)}")
-                    continue
-    return symbols
+    try:
+        tickers = exchange.fetch_tickers()  # 获取所有交易对的 ticker 信息
+        tickers_sorted = sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True)
+        
+        # 筛选出基准货币为 USDT 的交易对，选择前300个
+        top_300 = [symbol for symbol, data in tickers_sorted if data['quote'] == 'USDT'][:300]
+        return top_300
+    except Exception as e:
+        st.write(f"获取前300个交易对时出错: {str(e)}")
+        return []
 
 # 获取 OHLC 数据并计算 MA 指标
 def fetch_data(symbol, timeframe='1m', max_bars=1000):
@@ -173,7 +165,7 @@ def monitor_symbols(symbols):
 def main():
     st.title('高交易额现货 MA170 金叉 MA453 筛选系统')
 
-    symbols = get_high_volume_symbols()
+    symbols = get_top_300_volume_symbols()
 
     if not symbols:
         st.warning("未找到符合条件的交易对。")
