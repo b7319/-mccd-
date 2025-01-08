@@ -123,12 +123,16 @@ def display_result(res):
 # 监控交易对
 def monitor_symbols(symbols):
     valid_signals_local = set()
-    progress_bar = st.progress(0)
+    progress_bar = st.empty()
     status_text = st.empty()
     detected_text = st.empty()
+
     detected_text.markdown("### 当前检测状态：")
 
     while True:
+        progress_bar.progress(0)
+        status_text.text("检测进行中...")
+        
         for index, symbol in enumerate(symbols):
             df = fetch_data(symbol, timeframe='1m', max_bars=1000)
             if df is not None and not df.empty:
@@ -144,13 +148,8 @@ def monitor_symbols(symbols):
                         }
                         display_result(symbol_data)
 
-            # 更新进度条和状态
+            # 更新进度条
             progress_bar.progress((index + 1) / len(symbols))
-            status_text.text(f"检测进度: {index + 1}/{len(symbols)}")
-
-        # 刷新进度条和状态信息
-        progress_bar.progress(0)
-        detected_text.markdown("### 当前检测状态：")
         
         # 等待下一轮检测
         time.sleep(10)
