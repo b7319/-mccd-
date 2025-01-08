@@ -109,7 +109,7 @@ def display_result(symbol_data):
 
 # 监控交易对并累加显示符合条件的交易对
 def monitor_symbols(symbols):
-    # 初始化一个存储符合条件的交易对列表
+    # 初始化 session_state.valid_signals 防止未初始化的错误
     if 'valid_signals' not in st.session_state:
         st.session_state.valid_signals = []
 
@@ -149,7 +149,7 @@ def monitor_symbols(symbols):
             progress_bar.progress((index + 1) / len(symbols))
             
             # 延迟请求，防止触发 API 限制
-            time.sleep(3)
+            time.sleep(9)
 
         # 显示所有符合条件的交易对
         if current_valid_signals:
