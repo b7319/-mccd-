@@ -127,6 +127,8 @@ def monitor_symbols(symbols):
         current_valid_signals = []
 
         for index, symbol in enumerate(symbols):
+            status_text.text(f"正在处理交易对: {symbol} ({index + 1}/{len(symbols)})")
+            
             df = fetch_data(symbol, timeframe='1m', max_bars=1000)
             if df is not None and not df.empty:
                 condition_met, signal_type, condition_time = check_cross_conditions(df)
