@@ -1,236 +1,177 @@
 import ccxt
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import streamlit as st
-import time
+import requests
 import pytz
+import time
 
-# 初始化Gate.io API
-api_key = 'c8e2fb89d031ca42a30ed7b674cb06dc'
-api_secret = 'fab0bc8aeebeb31e46238eda033e2b6258e9c9185f262f74d4472489f9f03219'
-exchange = ccxt.gateio({
-    'apiKey': api_key,
-    'secret': api_secret,
-    'enableRateLimit': True,
-    'timeout': 20000
-})
+# 初始化 gate.io API
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
+exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 20000})
+
+# 北京时间
+beijing_tz = pytz.timezone('Asia/Shanghai')
 
 # 加载市场数据
 def load_markets_with_retry():
-    """
-    重试加载市场数据，最多尝试3次。
-    """
     for attempt in range(3):
         try:
             exchange.load_markets()
             break
         except ccxt.NetworkError:
             st.write(f"网络错误，正在重试 ({attempt + 1}/3)...")
-            time.sleep(5)
         except Exception as e:
             st.write(f"加载市场数据时出错: {str(e)}")
             st.stop()
 
 load_markets_with_retry()
 
-def get_market_volume(symbol):
-    """
-    获取指定交易对的24小时交易量（USDT计）。
-    """
+# 获取前300个交易对（根据交易量）
+def get_top_300_volume_symbols():
+    symbols = []
     try:
-        ticker = exchange.fetch_ticker(symbol)
-        return ticker.get('quoteVolume', None)  # 返回24小时交易量（USDT），若无数据则返回None
+        tickers = exchange.fetch_tickers()  # 获取所有交易对的 ticker 信息
+        tickers_sorted = sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True)
+        
+        # 筛选出基准货币为 USDT 的交易对，选择前300个
+        top_300 = [symbol for symbol, data in tickers_sorted if 'USDT' in data.get('symbol', '')][:300]
+        return top_300
     except Exception as e:
-        return None
+        st.write(f"获取前300个交易对时出错: {str(e)}")
+        return []
 
-def get_eligible_symbols(min_volume_usdt=3000000):
-    """
-    获取24小时交易量超过min_volume_usdt的现货USDT交易对。
-    """
-    eligible_symbols = []
-    for symbol in exchange.symbols:
-        if '/USDT' in symbol and 'USDT' not in symbol.split('/')[0] and ':' not in symbol:
-            volume = get_market_volume(symbol)
-            if volume is not None and volume >= min_volume_usdt:
-                eligible_symbols.append(symbol)
-    return eligible_symbols
-
-def fetch_data(symbol, timeframe='30m', limit=386):
-    """
-    获取指定交易对的K线数据。
-    """
+# 获取 OHLC 数据并计算 MA 指标
+def fetch_data(symbol, timeframe='1m', max_bars=1000):
     try:
-        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(minutes=max_bars)).isoformat())
+        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since)
         df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Shanghai')
         df.set_index('timestamp', inplace=True)
+
+        if df.empty:
+            st.write(f"{symbol} 在 {timeframe} 时间周期内没有数据。")
+            return None
+
+        # 计算移动平均线
+        df['ma170'] = df['close'].rolling(window=170, min_periods=1).mean()
+        df['ma453'] = df['close'].rolling(window=453, min_periods=1).mean()
+
         return df
     except Exception as e:
+        st.write(f"抓取 {symbol} 的数据时出错: {str(e)}")
         return None
 
-def calculate_ma(df, short_window=34, long_window=170):
-    """
-    计算MA34和MA170。
-    """
-    df['MA34'] = df['close'].rolling(window=short_window).mean()
-    df['MA170'] = df['close'].rolling(window=long_window).mean()
-    return df
+# 检测金叉和死叉条件
+def check_cross_conditions(df):
+    if df is None or len(df) < 453:
+        return False, None, None
 
-def calculate_macd(df, fast=12, slow=26, signal=9):
-    """
-    计算 MACD 的 DIF 和 DEA。
-    """
-    df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()  # 快速EMA
-    df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()  # 慢速EMA
-    df['DIF'] = df['ema_fast'] - df['ema_slow']  # DIF
-    df['DEA'] = df['DIF'].ewm(span=signal, adjust=False).mean()  # DEA
-    return df
+    # 检测最新的 9 根 K 线内是否发生金叉
+    last_9 = df.iloc[-9:]
+    gold_cross_time = None
+    for i in range(1, len(last_9)):
+        if last_9['ma170'].iloc[i - 1] < last_9['ma453'].iloc[i - 1] and \
+           last_9['ma170'].iloc[i] >= last_9['ma453'].iloc[i]:
+            gold_cross_time = last_9.index[i]
+            return True, "金叉", gold_cross_time
 
-def detect_macd_dead_cross(df):
-    """
-    检测DIF死叉DEA的点。
-    """
-    dead_cross_points = []
-    for i in range(1, len(df)):
-        if df['DIF'].iloc[i] < df['DEA'].iloc[i] and df['DIF'].iloc[i - 1] > df['DEA'].iloc[i - 1]:
-            dead_cross_points.append(i)
-    return dead_cross_points
+    # 检测是否发生死叉
+    death_cross_time = None
+    for i in range(1, len(last_9)):
+        if last_9['ma170'].iloc[i - 1] > last_9['ma453'].iloc[i - 1] and \
+           last_9['ma170'].iloc[i] <= last_9['ma453'].iloc[i]:
+            death_cross_time = last_9.index[i]
+            return True, "死叉", death_cross_time
 
-def get_ma34_valleys(df):
-    """
-    获取MA34波谷值，仅检测最新13根K线内。
-    """
-    valleys = []
-    latest_13_df = df.iloc[-13:]
-    for i in range(1, len(latest_13_df) - 1):
-        if latest_13_df['MA34'].iloc[i] < latest_13_df['MA34'].iloc[i - 1] and latest_13_df['MA34'].iloc[i] < \
-                latest_13_df['MA34'].iloc[i + 1]:
-            valleys.append((latest_13_df.index[i], latest_13_df['MA34'].iloc[i]))
-    return valleys
+    return False, None, None
 
-def get_effective_ma34_peaks(df, dead_cross_idx):
-    """
-    获取基于DIF死叉点之间区间内的有效MA34波峰值。
-    """
-    peaks = []
-    for i in range(len(dead_cross_idx) - 1):
-        start_idx = dead_cross_idx[i]
-        end_idx = dead_cross_idx[i + 1]
-        sub_df = df.iloc[start_idx:end_idx]
-        if sub_df.empty:
-            continue
-        # 查找区间内的有效波峰
-        for j in range(1, len(sub_df) - 1):
-            # 局部高点
-            if sub_df['MA34'].iloc[j] > sub_df['MA34'].iloc[j - 1] and sub_df['MA34'].iloc[j] > sub_df['MA34'].iloc[j + 1]:
-                # 取区间内MA34最高点
-                if sub_df['MA34'].iloc[j] == sub_df['MA34'].max():
-                    peak_time = sub_df.index[j]
-                    peak_value = sub_df['MA34'].iloc[j]
-                    peaks.append((peak_time, peak_value))
-    return peaks
+# 播放音频
+def play_alert_sound():
+    audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
+    audio_data = requests.get(audio_url).content
+    with open('alert.wav', 'wb') as f:
+        f.write(audio_data)
 
-def get_min_peak(df, peaks):
-    """
-    获取386根K线内的所有有效波峰中的最小波峰值。
-    """
-    if not peaks:
-        return None, None
-    min_peak = min(peaks, key=lambda x: x[1])
-    return min_peak
+    # 使用 Streamlit 播放音频
+    st.audio('alert.wav', format='audio/wav')
 
-def convert_to_cst(utc_time):
-    """
-    将UTC时间转换为北京时间，格式化为 YYYY/MM/DD HH:MM。
-    """
-    cst = pytz.timezone('Asia/Shanghai')
-    if isinstance(utc_time, pd.Timestamp):
-        utc_time = utc_time.replace(tzinfo=pytz.utc)
-    return utc_time.astimezone(cst).strftime('%Y/%m/%d %H:%M')
+# 显示符合条件的交易对结果
+def display_result(symbol_data):
+    st.write(f"交易对: {symbol_data['symbol']}")
+    st.write(f"满足条件的时间: {symbol_data['condition_time']}")
+    st.write(f"信号类型: {symbol_data['signal_type']}")
+    st.write(f"输出时间: {datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    st.write("---")
+    play_alert_sound()
 
-def main():
-    st.title('USDT交易对筛选器')
+# 监控交易对并累加显示符合条件的交易对
+def monitor_symbols(symbols):
+    # 初始化一个存储符合条件的交易对列表
+    if 'valid_signals' not in st.session_state:
+        st.session_state.valid_signals = []
 
-    st.write("正在加载符合条件的交易对...")
+    progress_bar = st.empty()
+    status_text = st.empty()
+    detected_text = st.empty()
 
-    # 确保在访问前初始化 session_state 中的 displayed_results
-    if "displayed_results" not in st.session_state:
-        st.session_state["displayed_results"] = []  # 初始化为空列表
-
-    results_container = st.container()
-    progress_container = st.empty()
-    status_container = st.empty()
-
-    # 获取符合条件的USDT交易对
-    eligible_symbols = get_eligible_symbols()
-    total_symbols = len(eligible_symbols)
-    st.write(f"成功加载 {total_symbols} 个交易对！")
+    detected_text.markdown("### 当前检测状态：")
     
-    if total_symbols == 0:
-        st.write("未找到符合条件的交易对")
-        return
-
-    # 初始化进度条
-    progress_bar = st.progress(0)
-    
-    # 无限循环检测
     while True:
-        for idx, symbol in enumerate(eligible_symbols):
-            progress_bar.progress((idx + 1) / total_symbols)
+        progress_bar.progress(0)
+        status_text.text("检测进行中...")
+        
+        # 当前轮次符合条件的交易对
+        current_valid_signals = []
 
-            status_container.write(f"正在检测交易对: {symbol}")
+        for index, symbol in enumerate(symbols):
+            status_text.text(f"正在处理交易对: {symbol} ({index + 1}/{len(symbols)})")
+            
+            df = fetch_data(symbol, timeframe='1m', max_bars=1000)
+            if df is not None and not df.empty:
+                condition_met, signal_type, condition_time = check_cross_conditions(df)
+                if condition_met:
+                    signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    symbol_data = {
+                        'symbol': symbol,
+                        'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'signal_type': signal_type
+                    }
+                    # 只有新的交易对才会被添加
+                    if signal_key not in [x['symbol'] for x in st.session_state.valid_signals]:
+                        st.session_state.valid_signals.append(symbol_data)
+                        current_valid_signals.append(symbol_data)
+                        display_result(symbol_data)
 
-            df = fetch_data(symbol, timeframe='30m', limit=386)  # 更新为30分钟K线数据
-            if df is not None and len(df) >= 13:
-                df = calculate_ma(df)
-                df = calculate_macd(df)
-                valleys = get_ma34_valleys(df)
-                if not valleys:
-                    continue
-                dead_cross_idx = detect_macd_dead_cross(df)
-                if not dead_cross_idx:
-                    continue
-                peaks = get_effective_ma34_peaks(df, dead_cross_idx)
-                if not peaks:
-                    continue
-                min_peak_time, min_peak_value = get_min_peak(df, peaks)
-                if min_peak_time is None or min_peak_value is None:
-                    continue
-                for valley_time, valley_value in valleys:
-                    ma170_valley = df.loc[valley_time]['MA170']
-                    if valley_value >= ma170_valley:
-                        ma170_peak = df.loc[min_peak_time]['MA170']
-                        if min_peak_value <= ma170_peak:  # 确保最小 MA34 波峰值在 MA170 波峰值下方
-                            detection_time = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Shanghai')).strftime('%Y/%m/%d %H:%M')
+            # 更新进度条
+            progress_bar.progress((index + 1) / len(symbols))
+            
+            # 延迟请求，防止触发 API 限制
+            time.sleep(3)
 
-                            # 将波谷值与交易对符合作为字典键
-                            key = f"{symbol}-{valley_value:.13f}"
+        # 显示所有符合条件的交易对
+        if current_valid_signals:
+            detected_text.markdown("### 累计符合条件的交易对：")
+            for signal in st.session_state.valid_signals:
+                detected_text.markdown(f"交易对: {signal['symbol']}, 满足条件时间: {signal['condition_time']}, 信号类型: {signal['signal_type']}")
 
-                            # 如果该波谷值尚未显示过，则显示
-                            if not any(item['key'] == key for item in st.session_state["displayed_results"]):
-                                st.session_state["displayed_results"].append({
-                                    'key': key,
-                                    'symbol': symbol,
-                                    'valley_value': valley_value,
-                                    'valley_time': valley_time,
-                                    'min_peak_value': min_peak_value,
-                                    'min_peak_time': min_peak_time,
-                                    'detection_time': detection_time
-                                })
+        # 等待下一轮检测
+        time.sleep(10)
 
-                                # 更新页面展示
-                                with results_container:
-                                    for result in st.session_state["displayed_results"]:
-                                        st.write(f"### 交易对: {result['symbol']}")
-                                        st.write(f"波谷值：{result['valley_value']:.13f}, 时间：{convert_to_cst(result['valley_time'])}")
-                                        st.write(f"最小波峰值：{result['min_peak_value']:.13f}, 时间：{convert_to_cst(result['min_peak_time'])}")
-                                        st.write(f"条件满足时间：{convert_to_cst(result['valley_time'])}")
-                                        st.write(f"检测并输出时间: {result['detection_time']}")
-                                        st.markdown("---")
+# 主程序
+def main():
+    st.title('高交易额现货 MA170 金叉 MA453 筛选系统')
 
-            time.sleep(0)  # 每个交易对无停顿
+    symbols = get_top_300_volume_symbols()
 
-        time.sleep(6)  # 每轮循环之间增加6秒延迟
+    if not symbols:
+        st.warning("未找到符合条件的交易对。")
+    else:
+        st.success(f"成功加载 {len(symbols)} 个交易对！")
+        st.write(f"正在检测中，交易对总数: {len(symbols)}")
+        monitor_symbols(symbols)  # 直接使用同步方法进行监控
 
 if __name__ == "__main__":
     main()
