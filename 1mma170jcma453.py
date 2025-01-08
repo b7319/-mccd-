@@ -41,8 +41,13 @@ def get_high_volume_symbols():
                 if ticker.get('quoteVolume', 0) >= 5_000_000:  # 检查日交易额是否超过 500 万 USDT
                     symbols.append(symbol)
             except ccxt.BaseError as e:
-                st.write(f"跳过无效交易对 {symbol}: {str(e)}")
-                continue
+                # 如果请求超限或其他错误，跳过该交易对
+                if 'label' in str(e) and 'TOO_MANY_REQUESTS' in str(e):
+                    st.write(f"跳过无效交易对 {symbol}: {str(e)}")
+                    continue
+                else:
+                    st.write(f"跳过无效交易对 {symbol}: {str(e)}")
+                    continue
     return symbols
 
 # 获取 OHLC 数据并计算 MA 指标
@@ -70,7 +75,7 @@ def fetch_data(symbol, timeframe='1m', max_bars=1000):
 # 检测金叉和死叉条件
 def check_cross_conditions(df):
     if df is None or len(df) < 453:
-        return False, None, None
+        return False, None, None, None
 
     # 检测最新的 9 根 K 线内是否发生金叉
     last_9 = df.iloc[-9:]
@@ -97,7 +102,7 @@ def check_cross_conditions(df):
     if death_cross_time is not None:
         return True, "死叉", death_cross_time
 
-    return False, None, None
+    return False, None, None, None
 
 # 播放音频
 def play_alert_sound():
@@ -148,14 +153,18 @@ def monitor_symbols(symbols):
                         'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
                         'signal_type': signal_type
                     }
-                    # 将符合条件的交易对保存到 session_state 中
-                    st.session_state.valid_signals.append(symbol_data)
-                    current_valid_signals.append(symbol_data)
-                    display_result(symbol_data)
+                    # 只有新的交易对才会被添加
+                    if signal_key not in [x['symbol'] for x in st.session_state.valid_signals]:
+                        st.session_state.valid_signals.append(symbol_data)
+                        current_valid_signals.append(symbol_data)
+                        display_result(symbol_data)
 
             # 更新进度条
             progress_bar.progress((index + 1) / len(symbols))
-        
+            
+            # 延迟请求，防止触发 API 限制
+            time.sleep(1)
+
         # 显示所有符合条件的交易对
         if current_valid_signals:
             detected_text.markdown("### 累计符合条件的交易对：")
