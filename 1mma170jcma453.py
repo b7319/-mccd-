@@ -28,7 +28,7 @@ def load_markets_with_retry():
 
 load_markets_with_retry()
 
-# 获取前300日交易额最大的交易对
+# 获取前300个交易对（根据交易量）
 def get_top_300_volume_symbols():
     symbols = []
     try:
@@ -36,7 +36,7 @@ def get_top_300_volume_symbols():
         tickers_sorted = sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True)
         
         # 筛选出基准货币为 USDT 的交易对，选择前300个
-        top_300 = [symbol for symbol, data in tickers_sorted if data['quote'] == 'USDT'][:300]
+        top_300 = [symbol for symbol, data in tickers_sorted if 'USDT' in data.get('symbol', '')][:300]
         return top_300
     except Exception as e:
         st.write(f"获取前300个交易对时出错: {str(e)}")
@@ -76,17 +76,14 @@ def check_cross_conditions(df):
         if last_9['ma170'].iloc[i - 1] < last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] >= last_9['ma453'].iloc[i]:
             gold_cross_time = last_9.index[i]
-            gold_cross_value = last_9['ma170'].iloc[i]
             return True, "金叉", gold_cross_time
 
     # 检测是否发生死叉
     death_cross_time = None
-    death_cross_value = None
     for i in range(1, len(last_9)):
         if last_9['ma170'].iloc[i - 1] > last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] <= last_9['ma453'].iloc[i]:
             death_cross_time = last_9.index[i]
-            death_cross_value = last_9['ma170'].iloc[i]
             return True, "死叉", death_cross_time
 
     return False, None, None
@@ -157,7 +154,7 @@ def monitor_symbols(symbols):
             detected_text.markdown("### 累计符合条件的交易对：")
             for signal in st.session_state.valid_signals:
                 detected_text.markdown(f"交易对: {signal['symbol']}, 满足条件时间: {signal['condition_time']}, 信号类型: {signal['signal_type']}")
-        
+
         # 等待下一轮检测
         time.sleep(10)
 
