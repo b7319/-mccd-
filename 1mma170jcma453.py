@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import requests
-import pygame
 import pytz
 import time
 
@@ -76,9 +75,9 @@ def fetch_data(symbol, timeframe='1m', max_bars=1000):
 # 检测金叉和死叉条件
 def check_cross_conditions(df):
     if df is None or len(df) < 453:
-        return False, None, None  # 如果数据不足，返回False
+        return False, None, None, None
 
-    # 检测金叉
+    # 检测最新的 9 根 K 线内是否发生金叉
     last_9 = df.iloc[-9:]
     gold_cross_time = None
     for i in range(1, len(last_9)):
@@ -88,7 +87,7 @@ def check_cross_conditions(df):
             gold_cross_value = last_9['ma170'].iloc[i]
             break
 
-    # 检测死叉
+    # 检测是否发生死叉
     death_cross_time = None
     death_cross_value = None
     for i in range(1, len(last_9)):
@@ -103,7 +102,7 @@ def check_cross_conditions(df):
     if death_cross_time is not None:
         return True, "死叉", death_cross_time
 
-    return False, None, None
+    return False, None, None, None
 
 # 播放音频
 def play_alert_sound():
@@ -177,7 +176,7 @@ def monitor_symbols(symbols):
 
 # 主程序
 def main():
-    st.title('高交易额现货 MA170 金叉 金叉死叉 筛选系统')
+    st.title('高交易额现货 MA170 金叉 MA453 筛选系统')
 
     symbols = get_high_volume_symbols()
 
@@ -185,6 +184,7 @@ def main():
         st.warning("未找到符合条件的交易对。")
     else:
         st.success(f"成功加载 {len(symbols)} 个交易对！")
+        st.write(f"正在检测中，交易对总数: {len(symbols)}")
         monitor_symbols(symbols)  # 直接使用同步方法进行监控
 
 if __name__ == "__main__":
