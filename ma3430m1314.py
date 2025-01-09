@@ -140,7 +140,7 @@ def monitor_symbols(symbols):
                         'signal_type': signal_type
                     }
                     # 只有新的交易对才会被添加
-                    if signal_key not in [x['symbol'] for x in st.session_state.valid_signals]:
+                    if signal_key not in [(x['symbol'], x['condition_time']) for x in st.session_state.valid_signals]:
                         st.session_state.valid_signals.append(symbol_data)
                         current_valid_signals.append(symbol_data)
                         display_result(symbol_data)
