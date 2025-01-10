@@ -22,6 +22,7 @@ def load_markets_with_retry():
             break
         except ccxt.NetworkError:
             st.write(f"网络错误，正在重试 ({attempt + 1}/3)...")
+            time.sleep(5)
         except Exception as e:
             st.write(f"加载市场数据时出错: {str(e)}")
             st.stop()
@@ -30,12 +31,9 @@ load_markets_with_retry()
 
 # 获取前300个交易对（根据交易量）
 def get_top_300_volume_symbols():
-    symbols = []
     try:
         tickers = exchange.fetch_tickers()  # 获取所有交易对的 ticker 信息
         tickers_sorted = sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True)
-        
-        # 筛选出基准货币为 USDT 的交易对，选择前300个
         top_300 = [symbol for symbol, data in tickers_sorted if 'USDT' in data.get('symbol', '')][:300]
         return top_300
     except Exception as e:
@@ -45,7 +43,7 @@ def get_top_300_volume_symbols():
 # 获取 OHLC 数据并计算 MA 指标
 def fetch_data(symbol, timeframe='30m', max_bars=1000):
     try:
-        since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(minutes=max_bars)).isoformat())
+        since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(minutes=max_bars * 30)).isoformat())
         ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since)
         df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Shanghai')
@@ -71,16 +69,12 @@ def check_cross_conditions(df):
 
     # 检测最新的 9 根 K 线内是否发生金叉
     last_9 = df.iloc[-9:]
-    gold_cross_time = None
     for i in range(1, len(last_9)):
         if last_9['ma170'].iloc[i - 1] < last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] >= last_9['ma453'].iloc[i]:
             gold_cross_time = last_9.index[i]
             return True, "金叉", gold_cross_time
 
-    # 检测是否发生死叉
-    death_cross_time = None
-    for i in range(1, len(last_9)):
         if last_9['ma170'].iloc[i - 1] > last_9['ma453'].iloc[i - 1] and \
            last_9['ma170'].iloc[i] <= last_9['ma453'].iloc[i]:
             death_cross_time = last_9.index[i]
@@ -94,8 +88,6 @@ def play_alert_sound():
     audio_data = requests.get(audio_url).content
     with open('alert.wav', 'wb') as f:
         f.write(audio_data)
-
-    # 使用 Streamlit 播放音频
     st.audio('alert.wav', format='audio/wav')
 
 # 显示符合条件的交易对结果
@@ -118,13 +110,13 @@ def monitor_symbols(symbols):
     detected_text = st.empty()
 
     detected_text.markdown("### 当前检测状态：")
-    
+
     while True:
         progress_bar.progress(0)
         status_text.text("检测进行中...")
 
-        # 当前轮次符合条件的交易对
-        current_valid_signals = []
+        # 临时存储当前轮次检测到的信号
+        current_round_signals = []
 
         for index, symbol in enumerate(symbols):
             status_text.text(f"正在处理交易对: {symbol} ({index + 1}/{len(symbols)})")
@@ -133,31 +125,26 @@ def monitor_symbols(symbols):
             if df is not None and not df.empty:
                 condition_met, signal_type, condition_time = check_cross_conditions(df)
                 if condition_met:
-                    signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'))
-                    symbol_data = {
-                        'symbol': symbol,
-                        'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'signal_type': signal_type
-                    }
-                    # 只有新的交易对才会被添加
-                    if signal_key not in [x['symbol'] for x in st.session_state.valid_signals]:
-                        st.session_state.valid_signals.append(symbol_data)
-                        current_valid_signals.append(symbol_data)
-                        display_result(symbol_data)
+                    signal_key = (symbol, condition_time.strftime('%Y-%m-%d %H:%M:%S'), signal_type)
 
-            # 更新进度条
+                    if signal_key not in [(s['symbol'], s['condition_time'], s['signal_type']) for s in st.session_state['valid_signals']]:
+                        signal_data = {
+                            'symbol': symbol,
+                            'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
+                            'signal_type': signal_type
+                        }
+                        st.session_state['valid_signals'].append(signal_data)
+                        current_round_signals.append(signal_data)
+                        display_result(signal_data)
+
             progress_bar.progress((index + 1) / len(symbols))
-
-            # 延迟请求，防止触发 API 限制
             time.sleep(3)
 
-        # 显示所有符合条件的交易对
-        if current_valid_signals:
+        if current_round_signals:
             detected_text.markdown("### 累计符合条件的交易对：")
-            for signal in st.session_state.valid_signals:
+            for signal in st.session_state['valid_signals']:
                 detected_text.markdown(f"交易对: {signal['symbol']}, 满足条件时间: {signal['condition_time']}, 信号类型: {signal['signal_type']}")
 
-        # 等待下一轮检测
         time.sleep(10)
 
 # 主程序
@@ -171,7 +158,7 @@ def main():
     else:
         st.success(f"成功加载 {len(symbols)} 个交易对！")
         st.write(f"正在检测中，交易对总数: {len(symbols)}")
-        monitor_symbols(symbols)  # 直接使用同步方法进行监控
+        monitor_symbols(symbols)
 
 if __name__ == "__main__":
     main()
