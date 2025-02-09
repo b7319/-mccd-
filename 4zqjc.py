@@ -1,10 +1,11 @@
 import ccxt
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
 import streamlit as st
 import pytz
 import time
-import requests
+import threading
+from queue import Queue
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
@@ -13,261 +14,191 @@ exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
     'enableRateLimit': True,
-    'timeout': 30000,
-    'rateLimit': 1000
+    'timeout': 30000
 })
 
-# 北京时间
-beijing_tz = pytz.timezone('Asia/Shanghai')
-
-# 支持的交易周期配置
-TIMEFRAMES = {
-    '1m': {'interval': 60, 'max_bars': 500},
-    '5m': {'interval': 300, 'max_bars': 500},
-    '30m': {'interval': 1800, 'max_bars': 700},
-    '4h': {'interval': 14400, 'max_bars': 500}
+# 配置参数
+CONFIG = {
+    'timeframes': {
+        '1m': {'interval': 60, 'max_bars': 500},
+        '5m': {'interval': 300, 'max_bars': 500},
+        '30m': {'interval': 1800, 'max_bars': 700},
+        '4h': {'interval': 14400, 'max_bars': 500}
+    },
+    'refresh_interval': 60  # 完整检测周期（秒）
 }
 
-# 初始化 session state
-if 'valid_signals' not in st.session_state:
-    st.session_state.valid_signals = {tf: [] for tf in TIMEFRAMES}
-if 'shown_signals' not in st.session_state:
-    st.session_state.shown_signals = {tf: set() for tf in TIMEFRAMES}
-if 'displayed_signals' not in st.session_state:
-    st.session_state.displayed_signals = {tf: set() for tf in TIMEFRAMES}
-if 'detection_round' not in st.session_state:
-    st.session_state.detection_round = 0
-if 'new_signals_count' not in st.session_state:
-    st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}
+# 初始化全局状态
+def init_session_state():
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
+        st.session_state.signal_history = {tf: [] for tf in CONFIG['timeframes']}
+        st.session_state.processed_signals = {tf: set() for tf in CONFIG['timeframes']}
+        st.session_state.detection_round = 0
+        st.session_state.last_update = {tf: None for tf in CONFIG['timeframes']}
+        st.session_state.signal_queue = Queue()
 
-# 初始化结果展示容器
-if 'result_containers' not in st.session_state:
-    st.session_state.result_containers = {
-        tf: st.container() for tf in TIMEFRAMES
-    }
+# 数据获取线程
+class DataFetcher(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.running = True
+        self.symbols = []
+        self.markets = None
+        
+    def load_markets(self):
+        for _ in range(3):
+            try:
+                self.markets = exchange.load_markets()
+                tickers = exchange.fetch_tickers()
+                valid = [(s, tickers[s]['quoteVolume']) for s in tickers 
+                        if self.markets[s].get('quote') == 'USDT' 
+                        and not any(c in s for c in ['3L','3S','5L','5S'])]
+                valid.sort(key=lambda x: x[1], reverse=True)
+                self.symbols = [s[0] for s in valid[:168]]
+                return True
+            except Exception:
+                time.sleep(2)
+        return False
 
-# 加载市场数据（带缓存）
-@st.cache_resource(ttl=3600)
-def load_markets_with_retry():
-    for attempt in range(3):
-        try:
-            return exchange.load_markets()
-        except ccxt.NetworkError:
-            time.sleep(2)
-        except Exception as e:
-            st.error(f"加载市场数据失败: {str(e)}")
-            st.stop()
-    return exchange.load_markets()
-
-# 获取前168个有效交易对
-def get_top_valid_symbols():
-    try:
-        markets = load_markets_with_retry()
-        tickers = exchange.fetch_tickers()
-
-        valid_symbols = []
-        for symbol in tickers:
-            market = markets.get(symbol)
-            if market and market['active'] and market['quote'] == 'USDT' \
-                    and market['type'] == 'spot' \
-                    and not any(c in symbol for c in ['3L', '3S', '5L', '5S']):
-                valid_symbols.append((symbol, tickers[symbol]['quoteVolume']))
-
-        valid_symbols.sort(key=lambda x: x[1], reverse=True)
-        return [symbol for symbol, _ in valid_symbols[:168]]
-    except Exception as e:
-        st.error(f"获取交易对失败: {str(e)}")
-        return []
-
-# 优化后的数据获取函数
-def fetch_ohlcv_with_retry(symbol, timeframe='1m'):
-    config = TIMEFRAMES[timeframe]
-    for attempt in range(3):
-        try:
-            now = exchange.milliseconds()
-            since = now - config['max_bars'] * config['interval'] * 1000
-            return exchange.fetch_ohlcv(symbol, timeframe, since)
-        except ccxt.NetworkError:
-            time.sleep(1)
-        except ccxt.BadSymbol:
-            return None
-        except Exception as e:
-            st.warning(f"{symbol} {timeframe} 数据获取失败: {str(e)}")
-            time.sleep(2)
-    return None
-
-# 处理数据并计算指标
-def process_data(ohlcvs, timeframe):
-    min_bars = 453  # 所有周期保持相同的最小K线数量要求
-    if not ohlcvs or len(ohlcvs) < min_bars:
+    def fetch_ohlcv(self, symbol, timeframe):
+        cfg = CONFIG['timeframes'][timeframe]
+        for _ in range(3):
+            try:
+                since = exchange.milliseconds() - cfg['max_bars'] * cfg['interval'] * 1000
+                return exchange.fetch_ohlcv(symbol, timeframe, since=since)
+            except Exception:
+                time.sleep(1)
         return None
 
-    df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Shanghai')
-    df.set_index('timestamp', inplace=True)
-
-    # 计算移动平均线（保持原逻辑）
-    df['ma170'] = df['close'].rolling(window=170, min_periods=1).mean()
-    df['ma453'] = df['close'].rolling(window=453, min_periods=1).mean()
-    df['ma34'] = df['close'].rolling(window=34, min_periods=1).mean()
-    df['ma7'] = df['close'].rolling(window=7, min_periods=1).mean()
-    return df
-
-# 检测逻辑（保持原逻辑不变）
-def check_cross_conditions(df):
-    if df is None or len(df) < 31:
-        return None, None
-
-    last_31 = df.iloc[-31:]
-
-    # 金叉检测
-    ma7_cross_ma34 = any(last_31['ma7'].iloc[i] > last_31['ma34'].iloc[i] 
-                       and last_31['ma7'].iloc[i-1] <= last_31['ma34'].iloc[i-1] 
-                       for i in range(1, len(last_31)))
-    
-    ma7_cross_ma170 = any(last_31['ma7'].iloc[i] > last_31['ma170'].iloc[i] 
-                        and last_31['ma7'].iloc[i-1] <= last_31['ma170'].iloc[i-1] 
-                        for i in range(1, len(last_31)))
-    
-    ma7_cross_ma453 = any(last_31['ma7'].iloc[i] > last_31['ma453'].iloc[i] 
-                        and last_31['ma7'].iloc[i-1] <= last_31['ma453'].iloc[i-1] 
-                        for i in range(1, len(last_31)))
-
-    # 死叉检测
-    ma7_death_ma34 = any(last_31['ma7'].iloc[i] < last_31['ma34'].iloc[i] 
-                       and last_31['ma7'].iloc[i-1] >= last_31['ma34'].iloc[i-1] 
-                       for i in range(1, len(last_31)))
-    
-    ma7_death_ma170 = any(last_31['ma7'].iloc[i] < last_31['ma170'].iloc[i] 
-                        and last_31['ma7'].iloc[i-1] >= last_31['ma170'].iloc[i-1] 
-                        for i in range(1, len(last_31)))
-    
-    ma7_death_ma453 = any(last_31['ma7'].iloc[i] < last_31['ma453'].iloc[i] 
-                        and last_31['ma7'].iloc[i-1] >= last_31['ma453'].iloc[i-1] 
-                        for i in range(1, len(last_31)))
-
-    signal_type = None
-    if all([ma7_cross_ma34, ma7_cross_ma170, ma7_cross_ma453]):
-        signal_type = 'MA7 金叉 MA34, MA170, MA453'
-    elif all([ma7_death_ma34, ma7_death_ma170, ma7_death_ma453]):
-        signal_type = 'MA7 死叉 MA34, MA170, MA453'
-
-    condition_time = last_31.index[-1] if signal_type else None
-    return signal_type, condition_time
-
-# 播放提示音（使用HTML组件直接嵌入）
-def play_alert_sound():
-    try:
-        audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
-        audio_html = f'''
-        <audio autoplay>
-            <source src="{audio_url}" type="audio/wav">
-        </audio>
-        '''
-        st.components.v1.html(audio_html, height=0)
-    except Exception as e:
-        st.warning(f"音频播放失败: {str(e)}")
-
-# 动态追加新信号到展示容器
-def append_new_signals(timeframe):
-    container = st.session_state.result_containers[timeframe]
-    new_signals = [
-        s for s in st.session_state.valid_signals[timeframe] 
-        if s['signal_id'] not in st.session_state.displayed_signals[timeframe]
-    ]
-    
-    for signal in new_signals:
-        with container:
-            st.markdown(f"""
-            **交易对**: {signal['symbol']}  
-            **信号类型**: {signal['signal_type']}  
-            **条件时间**: {signal['condition_time']}  
-            **检测时间**: {signal['detect_time']}
-            """)
-            st.write("---")
-        # 记录已展示信号
-        st.session_state.displayed_signals[timeframe].add(signal['signal_id'])
-
-# 主监控逻辑
-def monitor_symbols(symbols):
-    cols = st.columns(4)
-    for idx, (tf, col) in enumerate(zip(TIMEFRAMES, cols)):
-        with col:
-            st.subheader(f"{tf.upper()} 周期")
-            st.session_state.result_containers[tf] = st.container()
-
-    progress_bar = st.sidebar.progress(0)
-    status_text = st.sidebar.empty()
-    round_info = st.sidebar.empty()
-    new_signals_info = st.sidebar.empty()
-
-    while True:
-        start_time = time.time()
-        st.session_state.detection_round += 1
-        current_round_new = {tf: 0 for tf in TIMEFRAMES}
-        
-        for idx, symbol in enumerate(symbols):
-            progress = (idx + 1) / len(symbols)
-            progress_bar.progress(progress)
-            status_text.text(f"正在检测: {symbol}")
-
-            for timeframe in TIMEFRAMES:
-                try:
-                    ohlcvs = fetch_ohlcv_with_retry(symbol, timeframe)
-                    df = process_data(ohlcvs, timeframe)
-                    signal_type, condition_time = check_cross_conditions(df)
-                    
-                    if signal_type and condition_time:
-                        signal_id = f"{symbol}|{timeframe}|{condition_time.timestamp()}"
-                        
-                        if signal_id not in st.session_state.shown_signals[timeframe]:
-                            detect_time = datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')
-                            new_signal = {
-                                'symbol': symbol,
-                                'signal_type': signal_type,
-                                'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
-                                'detect_time': detect_time,
-                                'signal_id': signal_id
-                            }
-                            
-                            st.session_state.valid_signals[timeframe].append(new_signal)
-                            st.session_state.shown_signals[timeframe].add(signal_id)
-                            current_round_new[timeframe] += 1
-                            
-                            # 立即更新展示
-                            append_new_signals(timeframe)
-                            play_alert_sound()
-
-                except Exception as e:
+    def run(self):
+        while self.running:
+            try:
+                if not self.load_markets():
                     continue
+                
+                for symbol in self.symbols:
+                    for timeframe in CONFIG['timeframes']:
+                        data = self.fetch_ohlcv(symbol, timeframe)
+                        if data:
+                            st.session_state.signal_queue.put(('data', {
+                                'symbol': symbol,
+                                'timeframe': timeframe,
+                                'data': data
+                            }))
+                    time.sleep(0.3)
+                
+                time.sleep(CONFIG['refresh_interval'])
+                st.session_state.detection_round += 1
+                st.session_state.signal_queue.put(('round_update', None))
+                
+            except Exception as e:
+                print(f"Fetcher error: {str(e)}")
+                time.sleep(10)
 
-            time.sleep(0.5)  # 降低请求频率
+# 数据处理逻辑
+def process_signals():
+    beijing_tz = pytz.timezone('Asia/Shanghai')
+    
+    while True:
+        item = st.session_state.signal_queue.get()
+        if item[0] == 'data':
+            symbol = item[1]['symbol']
+            timeframe = item[1]['timeframe']
+            ohlcv = item[1]['data']
+            
+            try:
+                df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_convert(beijing_tz)
+                df.set_index('timestamp', inplace=True)
+                
+                # 计算MA指标
+                windows = [7, 34, 170, 453]
+                for w in windows:
+                    df[f'ma{w}'] = df['close'].rolling(window=w).mean()
+                
+                # 检测交叉
+                latest = df.iloc[-31:]
+                golden_cross = all(
+                    (latest['ma7'].iloc[-1] > latest[f'ma{w}'].iloc[-1]) and
+                    (latest['ma7'].iloc[-2] <= latest[f'ma{w}'].iloc[-2])
+                    for w in [34, 170, 453]
+                )
+                
+                death_cross = all(
+                    (latest['ma7'].iloc[-1] < latest[f'ma{w}'].iloc[-1]) and
+                    (latest['ma7'].iloc[-2] >= latest[f'ma{w}'].iloc[-2])
+                    for w in [34, 170, 453]
+                )
+                
+                if golden_cross or death_cross:
+                    signal_id = f"{symbol}|{timeframe}|{df.index[-1].timestamp()}"
+                    if signal_id not in st.session_state.processed_signals[timeframe]:
+                        signal = {
+                            'symbol': symbol,
+                            'type': '金叉' if golden_cross else '死叉',
+                            'timeframe': timeframe,
+                            'condition_time': df.index[-1].strftime('%Y-%m-%d %H:%M:%S'),
+                            'detect_time': datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S'),
+                            'id': signal_id
+                        }
+                        st.session_state.signal_history[timeframe].append(signal)
+                        st.session_state.processed_signals[timeframe].add(signal_id)
+                        st.session_state.signal_queue.put(('new_signal', signal))
+                        
+        elif item[0] == 'new_signal':
+            play_alert_sound()
 
-        # 更新统计信息
-        round_info.markdown(f"**检测轮次**: {st.session_state.detection_round}")
-        new_signals_info.markdown("**本轮新增信号**")
-        for tf in TIMEFRAMES:
-            new_signals_info.markdown(f"- {tf.upper()}: {current_round_new[tf]}")
+# 页面展示组件
+def render_dashboard():
+    st.title('MA多周期交叉监控系统')
+    
+    # 侧边栏状态显示
+    with st.sidebar:
+        st.header("监控状态")
+        st.write(f"检测轮次: {st.session_state.detection_round}")
+        st.write("最近更新:")
+        for tf in CONFIG['timeframes']:
+            last = st.session_state.last_update[tf]
+            st.write(f"{tf.upper()}: {last if last else '暂无'}")
 
-        elapsed = time.time() - start_time
-        sleep_time = max(60 - elapsed, 15)  # 保证至少15秒间隔
-        time.sleep(sleep_time)
+    # 主展示区
+    tabs = st.tabs([f"{tf.upper()}周期" for tf in CONFIG['timeframes']])
+    for idx, (tf, tab) in enumerate(zip(CONFIG['timeframes'], tabs)):
+        with tab:
+            container = st.container()
+            if st.session_state.signal_history[tf]:
+                with container:
+                    for signal in reversed(st.session_state.signal_history[tf][-20:]):  # 显示最近20条
+                        st.markdown(f"""
+                        **交易对**: {signal['symbol']}  
+                        **信号类型**: {signal['type']}  
+                        **条件时间**: {signal['condition_time']}  
+                        **检测时间**: {signal['detect_time']}
+                        """)
+                        st.write("---")
+                st.session_state.last_update[tf] = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%H:%M:%S')
 
-# 主程序入口
+# 提示音播放
+def play_alert_sound():
+    js = """
+    <audio id="alert" src="https://assets.mixkit.co/active_storage/sfx/2860/2860-preview.mp3"></audio>
+    <script>document.getElementById("alert").play();</script>
+    """
+    st.components.v1.html(js, height=0)
+
+# 主程序
 def main():
-    st.title('多周期MA交叉实时监控系统')
-    symbols = get_top_valid_symbols()
+    init_session_state()
     
-    if not symbols:
-        st.error("未找到有效交易对")
-        return
+    # 启动后台线程
+    if 'fetcher' not in st.session_state:
+        st.session_state.fetcher = DataFetcher()
+        st.session_state.fetcher.start()
+        threading.Thread(target=process_signals, daemon=True).start()
     
-    with st.expander("当前监控交易对列表", expanded=False):
-        st.write(f"监控数量: {len(symbols)}")
-        st.write(symbols)
-    
-    st.sidebar.title("监控状态面板")
-    monitor_symbols(symbols)
+    # 渲染界面
+    render_dashboard()
 
 if __name__ == "__main__":
     main()
