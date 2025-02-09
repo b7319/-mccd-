@@ -4,8 +4,6 @@ from datetime import datetime
 import streamlit as st
 import pytz
 import time
-import threading
-from queue import Queue
 
 # 初始化 gate.io API
 api_key = 'YOUR_API_KEY'
@@ -36,69 +34,38 @@ def init_session_state():
         st.session_state.processed_signals = {tf: set() for tf in CONFIG['timeframes']}
         st.session_state.detection_round = 0
         st.session_state.last_update = {tf: None for tf in CONFIG['timeframes']}
-        st.session_state.signal_queue = Queue()
+        st.session_state.symbols = []
 
-# 数据获取线程
-class DataFetcher(threading.Thread):
-    def __init__(self):
-        super().__init__(daemon=True)
-        self.running = True
-        self.symbols = []
-        self.markets = None
-        
-    def load_markets(self):
-        for _ in range(3):
-            try:
-                self.markets = exchange.load_markets()
-                tickers = exchange.fetch_tickers()
-                valid = [(s, tickers[s]['quoteVolume']) for s in tickers 
-                        if self.markets[s].get('quote') == 'USDT' 
-                        and not any(c in s for c in ['3L','3S','5L','5S'])]
-                valid.sort(key=lambda x: x[1], reverse=True)
-                self.symbols = [s[0] for s in valid[:168]]
-                return True
-            except Exception as e:
-                print(f"加载市场数据失败: {str(e)}")
-                time.sleep(2)
-        return False
+# 加载市场数据
+def load_markets():
+    for _ in range(3):
+        try:
+            markets = exchange.load_markets()
+            tickers = exchange.fetch_tickers()
+            valid = [(s, tickers[s]['quoteVolume']) for s in tickers 
+                    if markets[s].get('quote') == 'USDT' 
+                    and not any(c in s for c in ['3L','3S','5L','5S'])]
+            valid.sort(key=lambda x: x[1], reverse=True)
+            st.session_state.symbols = [s[0] for s in valid[:168]]
+            return True
+        except Exception as e:
+            st.error(f"加载市场数据失败: {str(e)}")
+            time.sleep(2)
+    return False
 
-    def fetch_ohlcv(self, symbol, timeframe):
-        cfg = CONFIG['timeframes'][timeframe]
-        for _ in range(3):
-            try:
-                since = exchange.milliseconds() - cfg['max_bars'] * cfg['interval'] * 1000
-                return exchange.fetch_ohlcv(symbol, timeframe, since=since)
-            except Exception as e:
-                print(f"获取 {symbol} {timeframe} 数据失败: {str(e)}")
-                time.sleep(1)
-        return None
+# 获取K线数据
+def fetch_ohlcv(symbol, timeframe):
+    cfg = CONFIG['timeframes'][timeframe]
+    for _ in range(3):
+        try:
+            since = exchange.milliseconds() - cfg['max_bars'] * cfg['interval'] * 1000
+            return exchange.fetch_ohlcv(symbol, timeframe, since=since)
+        except Exception as e:
+            st.warning(f"获取 {symbol} {timeframe} 数据失败: {str(e)}")
+            time.sleep(1)
+    return None
 
-    def run(self):
-        while self.running:
-            try:
-                if not self.load_markets():
-                    continue
-                
-                for symbol in self.symbols:
-                    for timeframe in CONFIG['timeframes']:
-                        data = self.fetch_ohlcv(symbol, timeframe)
-                        if data:
-                            st.session_state.signal_queue.put(('data', {
-                                'symbol': symbol,
-                                'timeframe': timeframe,
-                                'data': data
-                            }))
-                    time.sleep(0.3)
-                
-                time.sleep(CONFIG['refresh_interval'])
-                st.session_state.detection_round += 1
-                st.session_state.signal_queue.put(('round_update', None))
-                
-            except Exception as e:
-                print(f"Fetcher error: {str(e)}")
-                time.sleep(10)
-
-# 数据处理逻辑
+# 处理数据并检测信号
 def process_data(symbol, timeframe, ohlcv):
     beijing_tz = pytz.timezone('Asia/Shanghai')
     
@@ -139,18 +106,34 @@ def process_data(symbol, timeframe, ohlcv):
                 }
                 st.session_state.signal_history[timeframe].append(signal)
                 st.session_state.processed_signals[timeframe].add(signal_id)
-                st.session_state.signal_queue.put(('new_signal', signal))
+                play_alert_sound()
     except Exception as e:
-        print(f"处理 {symbol} {timeframe} 数据失败: {str(e)}")
+        st.error(f"处理 {symbol} {timeframe} 数据失败: {str(e)}")
 
-# 信号处理线程
-def process_signals():
-    while True:
-        item = st.session_state.signal_queue.get()
-        if item[0] == 'data':
-            process_data(item[1]['symbol'], item[1]['timeframe'], item[1]['data'])
-        elif item[0] == 'new_signal':
-            play_alert_sound()
+# 提示音播放
+def play_alert_sound():
+    js = """
+    <audio id="alert" src="https://assets.mixkit.co/active_storage/sfx/2860/2860-preview.mp3"></audio>
+    <script>document.getElementById("alert").play();</script>
+    """
+    st.components.v1.html(js, height=0)
+
+# 主监控逻辑
+def monitor_symbols():
+    if not st.session_state.symbols:
+        if not load_markets():
+            return
+    
+    for symbol in st.session_state.symbols:
+        for timeframe in CONFIG['timeframes']:
+            ohlcv = fetch_ohlcv(symbol, timeframe)
+            if ohlcv:
+                process_data(symbol, timeframe, ohlcv)
+        time.sleep(0.3)  # 降低请求频率
+
+    st.session_state.detection_round += 1
+    st.session_state.last_update = {tf: datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%H:%M:%S') 
+                                   for tf in CONFIG['timeframes']}
 
 # 页面展示组件
 def render_dashboard():
@@ -169,39 +152,29 @@ def render_dashboard():
     tabs = st.tabs([f"{tf.upper()}周期" for tf in CONFIG['timeframes']])
     for idx, (tf, tab) in enumerate(zip(CONFIG['timeframes'], tabs)):
         with tab:
-            container = st.container()
             if st.session_state.signal_history[tf]:
-                with container:
-                    for signal in reversed(st.session_state.signal_history[tf][-20:]):  # 显示最近20条
-                        st.markdown(f"""
-                        **交易对**: {signal['symbol']}  
-                        **信号类型**: {signal['type']}  
-                        **条件时间**: {signal['condition_time']}  
-                        **检测时间**: {signal['detect_time']}
-                        """)
-                        st.write("---")
-                st.session_state.last_update[tf] = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%H:%M:%S')
-
-# 提示音播放
-def play_alert_sound():
-    js = """
-    <audio id="alert" src="https://assets.mixkit.co/active_storage/sfx/2860/2860-preview.mp3"></audio>
-    <script>document.getElementById("alert").play();</script>
-    """
-    st.components.v1.html(js, height=0)
+                for signal in reversed(st.session_state.signal_history[tf][-20:]):  # 显示最近20条
+                    st.markdown(f"""
+                    **交易对**: {signal['symbol']}  
+                    **信号类型**: {signal['type']}  
+                    **条件时间**: {signal['condition_time']}  
+                    **检测时间**: {signal['detect_time']}
+                    """)
+                    st.write("---")
 
 # 主程序
 def main():
     init_session_state()
     
-    # 启动后台线程
-    if 'fetcher' not in st.session_state:
-        st.session_state.fetcher = DataFetcher()
-        st.session_state.fetcher.start()
-        threading.Thread(target=process_signals, daemon=True).start()
+    # 执行监控逻辑
+    monitor_symbols()
     
     # 渲染界面
     render_dashboard()
+    
+    # 定时刷新页面
+    time.sleep(CONFIG['refresh_interval'])
+    st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
