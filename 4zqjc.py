@@ -7,8 +7,8 @@ import time
 import requests
 
 # 初始化 gate.io API
-api_key = 'YOUR_API_KEY'  # 无需替换即可运行
-api_secret = 'YOUR_API_SECRET'  # 无需替换即可运行
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -33,10 +33,18 @@ if 'valid_signals' not in st.session_state:
     st.session_state.valid_signals = {tf: [] for tf in TIMEFRAMES}
 if 'shown_signals' not in st.session_state:
     st.session_state.shown_signals = {tf: set() for tf in TIMEFRAMES}
+if 'displayed_signals' not in st.session_state:
+    st.session_state.displayed_signals = {tf: set() for tf in TIMEFRAMES}
 if 'detection_round' not in st.session_state:
     st.session_state.detection_round = 0
 if 'new_signals_count' not in st.session_state:
     st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}
+
+# 初始化结果展示容器
+if 'result_containers' not in st.session_state:
+    st.session_state.result_containers = {
+        tf: st.container() for tf in TIMEFRAMES
+    }
 
 # 加载市场数据（带缓存）
 @st.cache_resource(ttl=3600)
@@ -147,33 +155,47 @@ def check_cross_conditions(df):
     condition_time = last_31.index[-1] if signal_type else None
     return signal_type, condition_time
 
-# 播放提示音（使用指定的在线音频资源）
+# 播放提示音（使用HTML组件直接嵌入）
 def play_alert_sound():
     try:
-        audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"  # 在线音频资源
-        audio_html = f'<audio autoplay><source src="{audio_url}" type="audio/wav"></audio>'
+        audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
+        audio_html = f'''
+        <audio autoplay>
+            <source src="{audio_url}" type="audio/wav">
+        </audio>
+        '''
         st.components.v1.html(audio_html, height=0)
     except Exception as e:
-        st.warning(f"无法播放提示音: {str(e)}")
+        st.warning(f"音频播放失败: {str(e)}")
 
-# 展示检测结果
-def display_results():
-    cols = st.columns(4)
-    for idx, (timeframe, col) in enumerate(zip(TIMEFRAMES, cols)):
-        with col:
-            st.subheader(f"{timeframe.upper()} 周期")
-            if st.session_state.valid_signals[timeframe]:
-                for signal in st.session_state.valid_signals[timeframe]:
-                    st.markdown(f"""
-                    **交易对**: {signal['symbol']}  
-                    **信号类型**: {signal['signal_type']}  
-                    **条件时间**: {signal['condition_time']}  
-                    **检测时间**: {datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')}
-                    """)
-                    st.write("---")
+# 动态追加新信号到展示容器
+def append_new_signals(timeframe):
+    container = st.session_state.result_containers[timeframe]
+    new_signals = [
+        s for s in st.session_state.valid_signals[timeframe] 
+        if s['signal_id'] not in st.session_state.displayed_signals[timeframe]
+    ]
+    
+    for signal in new_signals:
+        with container:
+            st.markdown(f"""
+            **交易对**: {signal['symbol']}  
+            **信号类型**: {signal['signal_type']}  
+            **条件时间**: {signal['condition_time']}  
+            **检测时间**: {signal['detect_time']}
+            """)
+            st.write("---")
+        # 记录已展示信号
+        st.session_state.displayed_signals[timeframe].add(signal['signal_id'])
 
-# 监控逻辑
+# 主监控逻辑
 def monitor_symbols(symbols):
+    cols = st.columns(4)
+    for idx, (tf, col) in enumerate(zip(TIMEFRAMES, cols)):
+        with col:
+            st.subheader(f"{tf.upper()} 周期")
+            st.session_state.result_containers[tf] = st.container()
+
     progress_bar = st.sidebar.progress(0)
     status_text = st.sidebar.empty()
     round_info = st.sidebar.empty()
@@ -182,70 +204,69 @@ def monitor_symbols(symbols):
     while True:
         start_time = time.time()
         st.session_state.detection_round += 1
-        st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}  # 重置每轮新增信号计数
+        current_round_new = {tf: 0 for tf in TIMEFRAMES}
         
         for idx, symbol in enumerate(symbols):
-            # 更新进度条和状态
             progress = (idx + 1) / len(symbols)
             progress_bar.progress(progress)
             status_text.text(f"正在检测: {symbol}")
 
-            # 依次检测四个周期
             for timeframe in TIMEFRAMES:
                 try:
-                    # 获取和处理数据
                     ohlcvs = fetch_ohlcv_with_retry(symbol, timeframe)
                     df = process_data(ohlcvs, timeframe)
-                    
-                    # 检测信号
                     signal_type, condition_time = check_cross_conditions(df)
+                    
                     if signal_type and condition_time:
-                        signal_id = f"{symbol}_{timeframe}_{condition_time.timestamp()}"
+                        signal_id = f"{symbol}|{timeframe}|{condition_time.timestamp()}"
                         
                         if signal_id not in st.session_state.shown_signals[timeframe]:
-                            st.session_state.shown_signals[timeframe].add(signal_id)
-                            st.session_state.valid_signals[timeframe].append({
+                            detect_time = datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')
+                            new_signal = {
                                 'symbol': symbol,
                                 'signal_type': signal_type,
                                 'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
-                                'timeframe': timeframe
-                            })
-                            st.session_state.new_signals_count[timeframe] += 1
+                                'detect_time': detect_time,
+                                'signal_id': signal_id
+                            }
+                            
+                            st.session_state.valid_signals[timeframe].append(new_signal)
+                            st.session_state.shown_signals[timeframe].add(signal_id)
+                            current_round_new[timeframe] += 1
+                            
+                            # 立即更新展示
+                            append_new_signals(timeframe)
                             play_alert_sound()
-                            # 立即更新页面展示
-                            display_results()
 
                 except Exception as e:
                     continue
 
-            # 控制每个货币对的检测间隔
-            time.sleep(1)
+            time.sleep(0.5)  # 降低请求频率
 
-        # 更新检测轮次和新增信号数量
+        # 更新统计信息
         round_info.markdown(f"**检测轮次**: {st.session_state.detection_round}")
-        new_signals_info.markdown(f"**新增信号数量**:")
-        for timeframe, count in st.session_state.new_signals_count.items():
-            new_signals_info.markdown(f"- {timeframe.upper()}: {count}")
+        new_signals_info.markdown("**本轮新增信号**")
+        for tf in TIMEFRAMES:
+            new_signals_info.markdown(f"- {tf.upper()}: {current_round_new[tf]}")
 
-        # 控制整体刷新频率
         elapsed = time.time() - start_time
-        sleep_time = max(60 - elapsed, 10)  # 至少间隔10秒
+        sleep_time = max(60 - elapsed, 15)  # 保证至少15秒间隔
         time.sleep(sleep_time)
 
-# 主程序
+# 主程序入口
 def main():
-    st.title('多周期MA交叉检测系统')
+    st.title('多周期MA交叉实时监控系统')
     symbols = get_top_valid_symbols()
     
     if not symbols:
         st.error("未找到有效交易对")
         return
     
-    with st.expander("当前监控交易对列表"):
+    with st.expander("当前监控交易对列表", expanded=False):
         st.write(f"监控数量: {len(symbols)}")
         st.write(symbols)
     
-    st.sidebar.title("监控状态")
+    st.sidebar.title("监控状态面板")
     monitor_symbols(symbols)
 
 if __name__ == "__main__":
