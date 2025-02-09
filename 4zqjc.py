@@ -146,7 +146,7 @@ def check_cross_conditions(df):
 # 播放提示音（使用在线音频资源）
 def play_alert_sound():
     try:
-        audio_url = "https://www.soundjay.com/button/beep-01a.mp3"  # 在线音频资源
+        audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"  # 在线音频资源
         st.audio(audio_url, format="audio/mp3", start_time=0)
     except Exception as e:
         st.warning(f"无法播放提示音: {str(e)}")
