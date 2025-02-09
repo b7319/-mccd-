@@ -57,7 +57,8 @@ class DataFetcher(threading.Thread):
                 valid.sort(key=lambda x: x[1], reverse=True)
                 self.symbols = [s[0] for s in valid[:168]]
                 return True
-            except Exception:
+            except Exception as e:
+                print(f"加载市场数据失败: {str(e)}")
                 time.sleep(2)
         return False
 
@@ -67,7 +68,8 @@ class DataFetcher(threading.Thread):
             try:
                 since = exchange.milliseconds() - cfg['max_bars'] * cfg['interval'] * 1000
                 return exchange.fetch_ohlcv(symbol, timeframe, since=since)
-            except Exception:
+            except Exception as e:
+                print(f"获取 {symbol} {timeframe} 数据失败: {str(e)}")
                 time.sleep(1)
         return None
 
@@ -97,55 +99,56 @@ class DataFetcher(threading.Thread):
                 time.sleep(10)
 
 # 数据处理逻辑
-def process_signals():
+def process_data(symbol, timeframe, ohlcv):
     beijing_tz = pytz.timezone('Asia/Shanghai')
     
+    try:
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_convert(beijing_tz)
+        df.set_index('timestamp', inplace=True)
+        
+        # 计算MA指标
+        windows = [7, 34, 170, 453]
+        for w in windows:
+            df[f'ma{w}'] = df['close'].rolling(window=w).mean()
+        
+        # 检测交叉
+        latest = df.iloc[-31:]
+        golden_cross = all(
+            (latest['ma7'].iloc[-1] > latest[f'ma{w}'].iloc[-1]) and
+            (latest['ma7'].iloc[-2] <= latest[f'ma{w}'].iloc[-2])
+            for w in [34, 170, 453]
+        )
+        
+        death_cross = all(
+            (latest['ma7'].iloc[-1] < latest[f'ma{w}'].iloc[-1]) and
+            (latest['ma7'].iloc[-2] >= latest[f'ma{w}'].iloc[-2])
+            for w in [34, 170, 453]
+        )
+        
+        if golden_cross or death_cross:
+            signal_id = f"{symbol}|{timeframe}|{df.index[-1].timestamp()}"
+            if signal_id not in st.session_state.processed_signals[timeframe]:
+                signal = {
+                    'symbol': symbol,
+                    'type': '金叉' if golden_cross else '死叉',
+                    'timeframe': timeframe,
+                    'condition_time': df.index[-1].strftime('%Y-%m-%d %H:%M:%S'),
+                    'detect_time': datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S'),
+                    'id': signal_id
+                }
+                st.session_state.signal_history[timeframe].append(signal)
+                st.session_state.processed_signals[timeframe].add(signal_id)
+                st.session_state.signal_queue.put(('new_signal', signal))
+    except Exception as e:
+        print(f"处理 {symbol} {timeframe} 数据失败: {str(e)}")
+
+# 信号处理线程
+def process_signals():
     while True:
         item = st.session_state.signal_queue.get()
         if item[0] == 'data':
-            symbol = item[1]['symbol']
-            timeframe = item[1]['timeframe']
-            ohlcv = item[1]['data']
-            
-            try:
-                df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_convert(beijing_tz)
-                df.set_index('timestamp', inplace=True)
-                
-                # 计算MA指标
-                windows = [7, 34, 170, 453]
-                for w in windows:
-                    df[f'ma{w}'] = df['close'].rolling(window=w).mean()
-                
-                # 检测交叉
-                latest = df.iloc[-31:]
-                golden_cross = all(
-                    (latest['ma7'].iloc[-1] > latest[f'ma{w}'].iloc[-1]) and
-                    (latest['ma7'].iloc[-2] <= latest[f'ma{w}'].iloc[-2])
-                    for w in [34, 170, 453]
-                )
-                
-                death_cross = all(
-                    (latest['ma7'].iloc[-1] < latest[f'ma{w}'].iloc[-1]) and
-                    (latest['ma7'].iloc[-2] >= latest[f'ma{w}'].iloc[-2])
-                    for w in [34, 170, 453]
-                )
-                
-                if golden_cross or death_cross:
-                    signal_id = f"{symbol}|{timeframe}|{df.index[-1].timestamp()}"
-                    if signal_id not in st.session_state.processed_signals[timeframe]:
-                        signal = {
-                            'symbol': symbol,
-                            'type': '金叉' if golden_cross else '死叉',
-                            'timeframe': timeframe,
-                            'condition_time': df.index[-1].strftime('%Y-%m-%d %H:%M:%S'),
-                            'detect_time': datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S'),
-                            'id': signal_id
-                        }
-                        st.session_state.signal_history[timeframe].append(signal)
-                        st.session_state.processed_signals[timeframe].add(signal_id)
-                        st.session_state.signal_queue.put(('new_signal', signal))
-                        
+            process_data(item[1]['symbol'], item[1]['timeframe'], item[1]['data'])
         elif item[0] == 'new_signal':
             play_alert_sound()
 
