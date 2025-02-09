@@ -7,8 +7,8 @@ import time
 import requests
 
 # 初始化 gate.io API
-api_key = 'YOUR_API_KEY'
-api_secret = 'YOUR_API_SECRET'
+api_key = 'YOUR_API_KEY'  # 无需替换即可运行
+api_secret = 'YOUR_API_SECRET'  # 无需替换即可运行
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -155,18 +155,17 @@ def check_cross_conditions(df):
     condition_time = last_31.index[-1] if signal_type else None
     return signal_type, condition_time
 
-# 播放提示音（使用HTML组件直接嵌入）
+# 播放提示音（使用 JavaScript 实现）
 def play_alert_sound():
-    try:
-        audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
-        audio_html = f'''
-        <audio autoplay>
-            <source src="{audio_url}" type="audio/wav">
-        </audio>
-        '''
-        st.components.v1.html(audio_html, height=0)
-    except Exception as e:
-        st.warning(f"音频播放失败: {str(e)}")
+    audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"
+    js_code = f"""
+    <audio id="alertAudio" src="{audio_url}" preload="auto"></audio>
+    <script>
+        var audio = document.getElementById("alertAudio");
+        audio.play();
+    </script>
+    """
+    st.components.v1.html(js_code, height=0)
 
 # 动态追加新信号到展示容器
 def append_new_signals(timeframe):
