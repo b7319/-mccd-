@@ -6,9 +6,9 @@ import pytz
 import time
 import requests
 
-# 初始化 gate.io API（使用 Streamlit Secrets 管理密钥）
-api_key = 'YOUR_API_KEY'
-api_secret = 'YOUR_API_SECRET'
+# 初始化 gate.io API
+api_key = 'YOUR_API_KEY'  # 无需替换即可运行
+api_secret = 'YOUR_API_SECRET'  # 无需替换即可运行
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -33,6 +33,10 @@ if 'valid_signals' not in st.session_state:
     st.session_state.valid_signals = {tf: [] for tf in TIMEFRAMES}
 if 'shown_signals' not in st.session_state:
     st.session_state.shown_signals = {tf: set() for tf in TIMEFRAMES}
+if 'detection_round' not in st.session_state:
+    st.session_state.detection_round = 0
+if 'new_signals_count' not in st.session_state:
+    st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}
 
 # 加载市场数据（带缓存）
 @st.cache_resource(ttl=3600)
@@ -171,9 +175,13 @@ def display_results():
 def monitor_symbols(symbols):
     progress_bar = st.sidebar.progress(0)
     status_text = st.sidebar.empty()
+    round_info = st.sidebar.empty()
+    new_signals_info = st.sidebar.empty()
 
     while True:
         start_time = time.time()
+        st.session_state.detection_round += 1
+        st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}  # 重置每轮新增信号计数
         
         for idx, symbol in enumerate(symbols):
             # 更新进度条和状态
@@ -201,6 +209,7 @@ def monitor_symbols(symbols):
                                 'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
                                 'timeframe': timeframe
                             })
+                            st.session_state.new_signals_count[timeframe] += 1
                             play_alert_sound()
                             # 立即更新页面展示
                             display_results()
@@ -210,6 +219,12 @@ def monitor_symbols(symbols):
 
             # 控制每个货币对的检测间隔
             time.sleep(1)
+
+        # 更新检测轮次和新增信号数量
+        round_info.markdown(f"**检测轮次**: {st.session_state.detection_round}")
+        new_signals_info.markdown(f"**新增信号数量**:")
+        for timeframe, count in st.session_state.new_signals_count.items():
+            new_signals_info.markdown(f"- {timeframe.upper()}: {count}")
 
         # 控制整体刷新频率
         elapsed = time.time() - start_time
