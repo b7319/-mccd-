@@ -143,11 +143,11 @@ def check_cross_conditions(df):
     condition_time = last_31.index[-1] if signal_type else None
     return signal_type, condition_time
 
-# 播放提示音（使用在线音频资源）
+# 播放提示音（使用指定的在线音频资源）
 def play_alert_sound():
     try:
         audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"  # 在线音频资源
-        st.audio(audio_url, format="audio/mp3", start_time=0)
+        st.audio(audio_url, format="audio/wav", start_time=0)
     except Exception as e:
         st.warning(f"无法播放提示音: {str(e)}")
 
