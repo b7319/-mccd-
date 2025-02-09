@@ -151,7 +151,8 @@ def check_cross_conditions(df):
 def play_alert_sound():
     try:
         audio_url = "http://121.36.79.185/wp-content/uploads/2024/12/alert.wav"  # 在线音频资源
-        st.audio(audio_url, format="audio/wav", start_time=0)
+        audio_html = f'<audio autoplay><source src="{audio_url}" type="audio/wav"></audio>'
+        st.components.v1.html(audio_html, height=0)
     except Exception as e:
         st.warning(f"无法播放提示音: {str(e)}")
 
