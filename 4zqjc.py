@@ -7,8 +7,8 @@ import time
 import requests
 
 # 初始化 gate.io API（使用 Streamlit Secrets 管理密钥）
-api_key = st.secrets["GATEIO_API_KEY"]
-api_secret = st.secrets["GATEIO_API_SECRET"]
+api_key = st.secrets["GATEIO"]["API_KEY"]
+api_secret = st.secrets["GATEIO"]["API_SECRET"]
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
