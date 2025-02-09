@@ -73,6 +73,7 @@ def get_top_valid_symbols():
                     and not any(c in symbol for c in ['3L', '3S', '5L', '5S']):
                 valid_symbols.append((symbol, tickers[symbol]['quoteVolume']))
 
+        # 按交易量排序并取前168
         valid_symbols.sort(key=lambda x: x[1], reverse=True)
         return [symbol for symbol, _ in valid_symbols[:168]]
     except Exception as e:
@@ -188,7 +189,7 @@ def append_new_signals(timeframe):
         st.session_state.displayed_signals[timeframe].add(signal['signal_id'])
 
 # 主监控逻辑
-def monitor_symbols(symbols):
+def monitor_symbols():
     cols = st.columns(4)
     for idx, (tf, col) in enumerate(zip(TIMEFRAMES, cols)):
         with col:
@@ -204,6 +205,12 @@ def monitor_symbols(symbols):
         start_time = time.time()
         st.session_state.detection_round += 1
         current_round_new = {tf: 0 for tf in TIMEFRAMES}
+
+        # 每轮检测前重新获取交易额前168的交易对
+        symbols = get_top_valid_symbols()
+        if not symbols:
+            st.error("未找到有效交易对")
+            return
         
         for idx, symbol in enumerate(symbols):
             progress = (idx + 1) / len(symbols)
@@ -255,18 +262,12 @@ def monitor_symbols(symbols):
 # 主程序入口
 def main():
     st.title('多周期MA交叉实时监控系统')
-    symbols = get_top_valid_symbols()
-    
-    if not symbols:
-        st.error("未找到有效交易对")
-        return
     
     with st.expander("当前监控交易对列表", expanded=False):
-        st.write(f"监控数量: {len(symbols)}")
-        st.write(symbols)
+        st.write("每轮检测前重新获取交易额前168的交易对")
     
     st.sidebar.title("监控状态面板")
-    monitor_symbols(symbols)
+    monitor_symbols()
 
 if __name__ == "__main__":
     main()
