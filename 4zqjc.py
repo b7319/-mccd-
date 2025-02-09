@@ -29,22 +29,19 @@ TIMEFRAMES = {
 }
 
 # 初始化 session state
-if 'valid_signals' not in st.session_state:
-    st.session_state.valid_signals = {tf: [] for tf in TIMEFRAMES}
-if 'shown_signals' not in st.session_state:
-    st.session_state.shown_signals = {tf: set() for tf in TIMEFRAMES}
-if 'displayed_signals' not in st.session_state:
-    st.session_state.displayed_signals = {tf: set() for tf in TIMEFRAMES}
-if 'detection_round' not in st.session_state:
-    st.session_state.detection_round = 0
-if 'new_signals_count' not in st.session_state:
-    st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}
-
-# 初始化结果展示容器
-if 'result_containers' not in st.session_state:
-    st.session_state.result_containers = {
-        tf: st.empty() for tf in TIMEFRAMES
-    }
+def initialize_session_state():
+    if 'valid_signals' not in st.session_state:
+        st.session_state.valid_signals = {tf: [] for tf in TIMEFRAMES}
+    if 'shown_signals' not in st.session_state:
+        st.session_state.shown_signals = {tf: set() for tf in TIMEFRAMES}
+    if 'displayed_signals' not in st.session_state:
+        st.session_state.displayed_signals = {tf: set() for tf in TIMEFRAMES}
+    if 'detection_round' not in st.session_state:
+        st.session_state.detection_round = 0
+    if 'new_signals_count' not in st.session_state:
+        st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}
+    if 'result_containers' not in st.session_state:
+        st.session_state.result_containers = {tf: st.empty() for tf in TIMEFRAMES}
 
 # 加载市场数据（带缓存）
 @st.cache_resource(ttl=3600)
@@ -268,6 +265,7 @@ def main():
         st.write("每轮检测前重新获取交易额前168的交易对")
     
     st.sidebar.title("监控状态面板")
+    initialize_session_state()  # 确保 session state 正确初始化
     monitor_symbols()
 
 if __name__ == "__main__":
