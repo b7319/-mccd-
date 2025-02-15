@@ -8,17 +8,6 @@ import base64
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 初始化 gate.io API
-api_key = st.secrets["GATEIO_API_KEY"]
-api_secret = st.secrets["GATEIO_API_SECRET"]
-exchange = ccxt.gateio({
-    'apiKey': api_key,
-    'secret': api_secret,
-    'enableRateLimit': True,
-    'timeout': 30000,
-    'rateLimit': 1000
-})
-
 # 配置参数
 CONFIG = {
     'refresh_interval': 60,  # 自动刷新间隔（秒）
@@ -45,27 +34,57 @@ def init_session_state():
         'current_batch': 0,
         'audio_enabled': False,
         'pending_audio': False,
-        'last_refresh': time.time()
+        'last_refresh': time.time(),
+        'api_configured': False
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
 
+# 初始化 API 配置
+def init_api():
+    try:
+        api_key = st.secrets["GATEIO_API_KEY"]
+        api_secret = st.secrets["GATEIO_API_SECRET"]
+        exchange = ccxt.gateio({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'enableRateLimit': True,
+            'timeout': 30000,
+            'rateLimit': 1000
+        })
+        st.session_state.api_configured = True
+        return exchange
+    except KeyError:
+        st.error("API 密钥未配置，请在 Streamlit Secrets 中设置 GATEIO_API_KEY 和 GATEIO_API_SECRET")
+        st.session_state.api_configured = False
+        return None
+    except Exception as e:
+        st.error(f"API 初始化失败: {str(e)}")
+        st.session_state.api_configured = False
+        return None
+
 # 音频处理
 @st.cache_data
 def get_audio_base64():
-    audio_file = open("alert.mp3", "rb")
-    return base64.b64encode(audio_file.read()).decode('utf-8')
+    try:
+        with open("alert.mp3", "rb") as audio_file:
+            return base64.b64encode(audio_file.read()).decode('utf-8')
+    except Exception as e:
+        st.error(f"音频文件加载失败: {str(e)}")
+        return None
 
 def audio_player():
     if st.session_state.pending_audio and st.session_state.audio_enabled:
-        audio_html = f"""
-        <audio autoplay>
-            <source src="data:audio/mp3;base64,{get_audio_base64()}" type="audio/mp3">
-        </audio>
-        """
-        st.components.v1.html(audio_html, height=0)
-        st.session_state.pending_audio = False
+        audio_base64 = get_audio_base64()
+        if audio_base64:
+            audio_html = f"""
+            <audio autoplay>
+                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+            </audio>
+            """
+            st.components.v1.html(audio_html, height=0)
+            st.session_state.pending_audio = False
 
 # 界面组件
 def setup_ui():
@@ -87,7 +106,7 @@ def setup_ui():
 
 # 获取交易对
 @st.cache_data(ttl=600)
-def get_top_valid_symbols():
+def get_top_valid_symbols(exchange):
     try:
         markets = exchange.load_markets()
         tickers = exchange.fetch_tickers()
@@ -122,64 +141,15 @@ def get_top_valid_symbols():
         st.error(f"获取交易对失败: {str(e)}")
         return []
 
-# 数据处理核心逻辑
-def process_symbol_task(symbol, timeframe):
-    try:
-        ohlcvs = get_cached_ohlcv(symbol, timeframe)
-        df = process_data(ohlcvs, timeframe)
-        signal_type, condition_time = check_cross_conditions(df, timeframe)
-
-        if signal_type and condition_time:
-            detect_time = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
-            signal_id = generate_signal_id(
-                symbol,
-                timeframe,
-                condition_time.strftime('%Y-%m-%d %H:%M:%S'),
-                signal_type
-            )
-            return symbol, timeframe, {
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'signal_type': signal_type,
-                'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
-                'detect_time': detect_time,
-                'signal_id': signal_id
-            }
-    except Exception as e:
-        pass
-    return symbol, timeframe, None
-
-# 分批处理函数
-def process_batch(symbols_batch):
-    with ThreadPoolExecutor(max_workers=CONFIG['max_workers']) as executor:
-        futures = []
-        for symbol in symbols_batch:
-            for timeframe in TIMEFRAMES:
-                futures.append(executor.submit(process_symbol_task, symbol, timeframe))
-        
-        for future in as_completed(futures):
-            symbol, timeframe, signal = future.result()
-            if signal:
-                handle_new_signal(signal)
-
-def handle_new_signal(signal):
-    tf = signal['timeframe']
-    signal_id = signal['signal_id']
-    if signal_id not in st.session_state.shown_signals[tf]:
-        st.session_state.valid_signals[tf].append(signal)
-        st.session_state.shown_signals[tf].add(signal_id)
-        st.session_state.new_signals_count[tf] += 1
-        st.session_state.pending_audio = True
-
 # 主检测流程
-def main_detection_cycle():
+def main_detection_cycle(exchange):
     # 自动刷新逻辑
     if time.time() - st.session_state.last_refresh > CONFIG['refresh_interval']:
         st.session_state.current_batch = 0
         st.session_state.last_refresh = time.time()
         st.rerun()
 
-    symbols = get_top_valid_symbols()
+    symbols = get_top_valid_symbols(exchange)
     if not symbols:
         st.error("无法获取交易对列表")
         return
@@ -189,7 +159,7 @@ def main_detection_cycle():
     end = start + CONFIG['batch_size']
     current_batch = symbols[start:end]
     
-    process_batch(current_batch)
+    process_batch(current_batch, exchange)
     
     if end < len(symbols):
         st.session_state.current_batch += 1
@@ -213,11 +183,16 @@ def display_results():
 
 def main():
     init_session_state()
+    exchange = init_api()
+    
+    if not st.session_state.api_configured:
+        st.stop()
+    
     setup_ui()
     audio_player()
     
     with st.spinner("🔍 正在扫描市场机会..."):
-        main_detection_cycle()
+        main_detection_cycle(exchange)
     
     display_results()
     
