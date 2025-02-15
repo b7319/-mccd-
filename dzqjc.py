@@ -7,7 +7,6 @@ import time
 import base64
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from st_autorefresh import run as autorefresh_run
 
 # 初始化 gate.io API
 api_key = st.secrets["GATEIO_API_KEY"]
@@ -22,10 +21,18 @@ exchange = ccxt.gateio({
 
 # 配置参数
 CONFIG = {
-    'refresh_interval': 60 * 1000,  # 自动刷新间隔（毫秒）
-    'max_workers': 6,              # 线程池大小
-    'max_retries': 3,              # API重试次数
-    'batch_size': 10               # 每批处理交易对数
+    'refresh_interval': 60,  # 自动刷新间隔（秒）
+    'max_workers': 6,        # 线程池大小
+    'max_retries': 3,        # API重试次数
+    'batch_size': 10         # 每批处理交易对数
+}
+
+# 交易周期配置
+TIMEFRAMES = {
+    '1m': {'interval': 60, 'max_bars': 500, 'cache_ttl': 45, 'window_size': 31},
+    '5m': {'interval': 300, 'max_bars': 500, 'cache_ttl': 240, 'window_size': 31},
+    '30m': {'interval': 1800, 'max_bars': 700, 'cache_ttl': 1500, 'window_size': 131},
+    '4h': {'interval': 14400, 'max_bars': 700, 'cache_ttl': 14400, 'window_size': 131}
 }
 
 # 初始化 session state
@@ -37,19 +44,12 @@ def init_session_state():
         'new_signals_count': {tf: 0 for tf in TIMEFRAMES},
         'current_batch': 0,
         'audio_enabled': False,
-        'pending_audio': False
+        'pending_audio': False,
+        'last_refresh': time.time()
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
-
-# 交易周期配置
-TIMEFRAMES = {
-    '1m': {'interval': 60, 'max_bars': 500, 'cache_ttl': 45, 'window_size': 31},
-    '5m': {'interval': 300, 'max_bars': 500, 'cache_ttl': 240, 'window_size': 31},
-    '30m': {'interval': 1800, 'max_bars': 700, 'cache_ttl': 1500, 'window_size': 131},
-    '4h': {'interval': 14400, 'max_bars': 700, 'cache_ttl': 14400, 'window_size': 131}
-}
 
 # 音频处理
 @st.cache_data
@@ -67,9 +67,6 @@ def audio_player():
         st.components.v1.html(audio_html, height=0)
         st.session_state.pending_audio = False
 
-# 初始化session state
-init_session_state()
-
 # 界面组件
 def setup_ui():
     st.title('📈 智能多周期趋势监控系统')
@@ -83,12 +80,74 @@ def setup_ui():
     st.sidebar.progress(st.session_state.current_batch/CONFIG['batch_size'], 
                        text="检测进度")
     
-    if st.sidebar.button("🚨 立即刷新数据"):
+    if st.sidebar.button("🔄 立即刷新数据"):
         st.session_state.current_batch = 0
+        st.session_state.last_refresh = time.time()
         st.rerun()
 
-# 数据处理核心逻辑（保持不变）
-# ... [保持原有数据处理、信号检测等核心逻辑不变] ...
+# 获取交易对
+@st.cache_data(ttl=600)
+def get_top_valid_symbols():
+    try:
+        markets = exchange.load_markets()
+        tickers = exchange.fetch_tickers()
+
+        valid_symbols = []
+        for symbol in tickers:
+            if any(c in symbol for c in ['3L', '3S', '5L', '5S', '_']):
+                continue
+
+            market = markets.get(symbol)
+            if not market:
+                continue
+
+            if (market['active'] and
+                    market['quote'] == 'USDT' and
+                    market['type'] == 'spot' and
+                    market['spot'] and
+                    market['percentage'] > 0):
+
+                quote_volume = tickers[symbol].get('quoteVolume', 0)
+                if isinstance(quote_volume, (int, float)) and quote_volume >= 10000:
+                    valid_symbols.append((symbol, quote_volume))
+
+        valid_symbols.sort(key=lambda x: -x[1])
+        filtered = [s for s in valid_symbols if s[1] >= 100000][:86]
+        remaining = 86 - len(filtered)
+        if remaining > 0:
+            filtered += [s for s in valid_symbols if s[1] < 100000][:remaining]
+
+        return [s[0] for s in filtered]
+    except Exception as e:
+        st.error(f"获取交易对失败: {str(e)}")
+        return []
+
+# 数据处理核心逻辑
+def process_symbol_task(symbol, timeframe):
+    try:
+        ohlcvs = get_cached_ohlcv(symbol, timeframe)
+        df = process_data(ohlcvs, timeframe)
+        signal_type, condition_time = check_cross_conditions(df, timeframe)
+
+        if signal_type and condition_time:
+            detect_time = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
+            signal_id = generate_signal_id(
+                symbol,
+                timeframe,
+                condition_time.strftime('%Y-%m-%d %H:%M:%S'),
+                signal_type
+            )
+            return symbol, timeframe, {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'signal_type': signal_type,
+                'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'detect_time': detect_time,
+                'signal_id': signal_id
+            }
+    except Exception as e:
+        pass
+    return symbol, timeframe, None
 
 # 分批处理函数
 def process_batch(symbols_batch):
@@ -114,6 +173,12 @@ def handle_new_signal(signal):
 
 # 主检测流程
 def main_detection_cycle():
+    # 自动刷新逻辑
+    if time.time() - st.session_state.last_refresh > CONFIG['refresh_interval']:
+        st.session_state.current_batch = 0
+        st.session_state.last_refresh = time.time()
+        st.rerun()
+
     symbols = get_top_valid_symbols()
     if not symbols:
         st.error("无法获取交易对列表")
@@ -129,10 +194,6 @@ def main_detection_cycle():
     if end < len(symbols):
         st.session_state.current_batch += 1
         st.rerun()
-    else:
-        st.session_state.current_batch = 0
-        st.session_state.detection_round += 1
-        autorefresh_run(interval=CONFIG['refresh_interval'], limit=100)
 
 # 结果展示
 def display_results():
@@ -151,6 +212,7 @@ def display_results():
                 st.info("当前周期暂无有效信号")
 
 def main():
+    init_session_state()
     setup_ui()
     audio_player()
     
