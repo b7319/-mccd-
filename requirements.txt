@@ -3,3 +3,5 @@ ccxt
 pandas
 matplotlib
 pygame
+pytz==2024.1
+st_autorefresh==0.1.5
