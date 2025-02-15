@@ -1,195 +1,362 @@
 import ccxt
 import pandas as pd
+from datetime import datetime, timezone
 import streamlit as st
 import pytz
 import time
 import base64
 import hashlib
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 配置参数
-CONFIG = {
-    'refresh_interval': 60,  # 自动刷新间隔（秒）
-    'max_workers': 4,        # 线程池大小
-    'batch_size': 8          # 每批处理交易对数
-}
+# 初始化 gate.io API
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
+exchange = ccxt.gateio({
+    'apiKey': api_key,
+    'secret': api_secret,
+    'enableRateLimit': True,
+    'timeout': 30000,
+    'rateLimit': 1000
+})
+
+# 北京时间配置
+beijing_tz = pytz.timezone('Asia/Shanghai')
 
 # 交易周期配置
 TIMEFRAMES = {
-    '5m': {'interval': 300, 'max_bars': 500, 'window_size': 31},
-    '30m': {'interval': 1800, 'max_bars': 700, 'window_size': 131},
-    '4h': {'interval': 14400, 'max_bars': 700, 'window_size': 131}
+    '1m': {'interval': 60, 'max_bars': 500, 'cache_ttl': 45, 'window_size': 31},
+    '5m': {'interval': 300, 'max_bars': 500, 'cache_ttl': 240, 'window_size': 31},
+    '30m': {'interval': 1800, 'max_bars': 700, 'cache_ttl': 1500, 'window_size': 131},
+    '4h': {'interval': 14400, 'max_bars': 700, 'cache_ttl': 14400, 'window_size': 131}
 }
 
 # 初始化 session state
-def init_session_state():
-    defaults = {
-        'valid_signals': {tf: [] for tf in TIMEFRAMES},
-        'shown_signals': {tf: set() for tf in TIMEFRAMES},
-        'detection_round': 0,
-        'current_batch': 0,
-        'last_refresh': time.time(),
-        'api_configured': False
+if 'valid_signals' not in st.session_state:
+    st.session_state.valid_signals = {tf: [] for tf in TIMEFRAMES}
+if 'shown_signals' not in st.session_state:
+    st.session_state.shown_signals = {tf: set() for tf in TIMEFRAMES}
+if 'detection_round' not in st.session_state:
+    st.session_state.detection_round = 0
+if 'new_signals_count' not in st.session_state:
+    st.session_state.new_signals_count = {tf: 0 for tf in TIMEFRAMES}
+
+# 全局缓存
+ohlcv_cache = {}
+symbol_cache = {'symbols': [], 'timestamp': 0}
+
+# 结果展示容器
+if 'result_containers' not in st.session_state:
+    st.session_state.result_containers = {
+        tf: {'container': None, 'placeholder': None}
+        for tf in TIMEFRAMES
     }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
 
-# 初始化 API 配置（增强兼容性版）
-def init_api():
-    try:
-        # 检查Secrets配置
-        if "GATEIO" not in st.secrets:
-            st.error("请检查Secrets配置格式，需要使用 [GATEIO] 段落")
-            return None
-            
-        api_key = st.secrets.GATEIO.get("API_KEY")
-        api_secret = st.secrets.GATEIO.get("API_SECRET")
-        
-        if not api_key or not api_secret:
-            st.error("API密钥未完整配置，请检查GATEIO段落下的API_KEY和API_SECRET")
-            return None
+# 实时交易对列表状态
+if 'current_symbols' not in st.session_state:
+    st.session_state.current_symbols = []
 
-        exchange = ccxt.gateio({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,
-            'timeout': 15000,
-            'rateLimit': 600
-        })
-        
-        # 验证API连接
-        exchange.fetch_balance()
-        st.session_state.api_configured = True
-        return exchange
-        
-    except ccxt.AuthenticationError:
-        st.error("API密钥验证失败，请检查密钥是否正确")
-        return None
-    except Exception as e:
-        st.error(f"API初始化失败: {str(e)}")
-        return None
 
-# 获取交易对（优化缓存版）
-@st.cache_data(ttl=300, show_spinner=False)
-def get_top_symbols(exchange):
+# 音频处理
+def get_audio_base64(file_path):
+    with open(file_path, "rb") as audio_file:
+        return base64.b64encode(audio_file.read()).decode('utf-8')
+
+
+def play_alert_sound():
+    audio_base64 = get_audio_base64("alert.wav")
+    audio_html = f"""
+    <audio autoplay>
+        <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
+    </audio>
+    """
+    st.components.v1.html(audio_html, height=0)
+
+
+# 信号ID生成
+def generate_signal_id(symbol, timeframe, condition_time, signal_type):
+    unique_str = f"{symbol}|{timeframe}|{condition_time}|{signal_type}"
+    return hashlib.md5(unique_str.encode()).hexdigest()
+
+
+# 优化后的交易对获取
+@st.cache_data(ttl=600)
+def get_top_valid_symbols():
     try:
         markets = exchange.load_markets()
-        valid = [
-            s for s in markets 
-            if markets[s]['active'] 
-            and markets[s]['quote'] == 'USDT' 
-            and not any(c in s for c in ['3L','3S','5L','5S'])
-        ]
-        return valid[:50]  # 精简监控数量提高性能
+        tickers = exchange.fetch_tickers()
+
+        valid_symbols = []
+        for symbol in tickers:
+            if any(c in symbol for c in ['3L', '3S', '5L', '5S', '_']):
+                continue
+
+            market = markets.get(symbol)
+            if not market:
+                continue
+
+            if (market['active'] and
+                    market['quote'] == 'USDT' and
+                    market['type'] == 'spot' and
+                    market['spot'] and
+                    market['percentage'] > 0):
+
+                quote_volume = tickers[symbol].get('quoteVolume', 0)
+                if isinstance(quote_volume, (int, float)) and quote_volume >= 10000:
+                    valid_symbols.append((symbol, quote_volume))
+
+        valid_symbols.sort(key=lambda x: -x[1])
+        filtered = [s for s in valid_symbols if s[1] >= 100000][:86]
+        remaining = 86 - len(filtered)
+        if remaining > 0:
+            filtered += [s for s in valid_symbols if s[1] < 100000][:remaining]
+
+        return [s[0] for s in filtered]
     except Exception as e:
         st.error(f"获取交易对失败: {str(e)}")
         return []
 
-# 数据处理核心逻辑
-def analyze_symbol(symbol, exchange, timeframe):
-    try:
-        data = exchange.fetch_ohlcv(symbol, timeframe, limit=500)
-        if len(data) < 100:
+
+# 带缓存的数据获取
+def get_cached_ohlcv(symbol, timeframe):
+    now = time.time()
+    cache_key = (symbol, timeframe)
+    config = TIMEFRAMES[timeframe]
+
+    if cache_key in ohlcv_cache:
+        data, timestamp = ohlcv_cache[cache_key]
+        if now - timestamp < config['cache_ttl']:
+            return data
+
+    for _ in range(3):
+        try:
+            since = exchange.milliseconds() - (config['max_bars'] * config['interval'] * 1000)
+            data = exchange.fetch_ohlcv(symbol, timeframe, since)
+            if data and len(data) >= 453:
+                ohlcv_cache[cache_key] = (data, now)
+                return data
+        except ccxt.NetworkError:
+            time.sleep(1)
+        except ccxt.BadSymbol:
             return None
-            
-        df = pd.DataFrame(data, columns=['timestamp','open','high','low','close','volume'])
-        df['ma7'] = df.close.rolling(7).mean()
-        df['ma34'] = df.close.rolling(34).mean()
-        
-        # 检测逻辑
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        if latest['ma7'] > latest['ma34'] and prev['ma7'] <= prev['ma34']:
-            return {'symbol': symbol, 'type': '金叉', 'timeframe': timeframe}
-        elif latest['ma7'] < latest['ma34'] and prev['ma7'] >= prev['ma34']:
-            return {'symbol': symbol, 'type': '死叉', 'timeframe': timeframe}
-            
-    except Exception:
-        pass
     return None
 
-# 主界面
-def main_ui():
-    st.title('📊 智能MA交叉监控系统')
-    st.caption("Gate.io现货市场实时监控 | 每60秒自动刷新")
-    
-    if not st.session_state.api_configured:
-        with st.expander("❓ 配置指南", expanded=True):
-            st.markdown("""
-            1. 在Streamlit Secrets中按以下格式配置API密钥：
-               ```toml
-               [GATEIO]
-               API_KEY = "您的API密钥"
-               API_SECRET = "您的密钥密码"
-               ```
-            2. 确保交易对为USDT现货交易对
-            3. 首次加载可能需要1-2分钟初始化
-            """)
-        return
-    
-    # 控制面板
-    with st.sidebar:
-        st.header("控制面板")
-        if st.button("🔄 立即刷新"):
-            st.session_state.current_batch = 0
-            st.rerun()
-            
-        st.progress(st.session_state.current_batch / CONFIG['batch_size'])
-        st.write(f"检测轮次: {st.session_state.detection_round}")
-        
-    # 检测逻辑
-    symbols = get_top_symbols(exchange)
-    if not symbols:
-        return
-        
-    batch_size = CONFIG['batch_size']
-    start = st.session_state.current_batch * batch_size
-    batch = symbols[start:start+batch_size]
-    
-    with ThreadPoolExecutor(max_workers=CONFIG['max_workers']) as executor:
-        futures = []
-        for symbol in batch:
-            for tf in TIMEFRAMES:
-                futures.append(executor.submit(analyze_symbol, symbol, exchange, tf))
-        
-        for future in futures:
-            result = future.result()
-            if result:
-                signal_id = f"{result['symbol']}|{result['timeframe']}|{result['type']}"
-                if signal_id not in st.session_state.shown_signals[result['timeframe']]:
-                    st.session_state.valid_signals[result['timeframe']].append(result)
-                    st.session_state.shown_signals[result['timeframe']].add(signal_id)
-    
-    # 显示结果
-    for tf in TIMEFRAMES:
-        with st.expander(f"{tf.upper()}周期信号 ({len(st.session_state.valid_signals[tf])})", expanded=True):
-            if st.session_state.valid_signals[tf]:
-                for sig in st.session_state.valid_signals[tf]:
-                    color = "#00ff00" if sig['type'] == '金叉' else "#ff0000"
-                    st.markdown(f"""
-                    <div style="padding:10px;border-radius:5px;margin:5px 0;background:#1a1a1a">
-                        🚩 <strong>{sig['symbol']}</strong> | 
-                        <span style="color:{color}">{sig['type']}</span> | 
-                        {pd.Timestamp.now().strftime('%H:%M:%S')}
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("暂无信号")
 
-    # 自动刷新控制
-    if time.time() - st.session_state.last_refresh > CONFIG['refresh_interval']:
-        st.session_state.current_batch = 0
-        st.session_state.detection_round += 1
-        st.session_state.last_refresh = time.time()
-        st.rerun()
-    elif (start + batch_size) < len(symbols):
-        st.session_state.current_batch += 1
-        st.rerun()
+# 精确数据处理
+def process_data(ohlcvs, timeframe):
+    windows = [7, 34, 170, 453]
+    if not ohlcvs or len(ohlcvs) < max(windows):
+        return None
+
+    df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert(beijing_tz)
+    df.set_index('timestamp', inplace=True)
+
+    # 严格计算移动平均线
+    close = df['close']
+    for window in windows:
+        df[f'ma{window}'] = close.rolling(window=window, min_periods=window).mean()
+
+    return df.dropna()
+
+
+# 修复后的交叉检测逻辑
+def check_cross_conditions(df, timeframe):
+    config = TIMEFRAMES[timeframe]
+    window_size = config['window_size']
+
+    if df is None or len(df) < window_size:
+        return None, None
+
+    df_window = df.iloc[-window_size:]
+
+    # 数据完整性验证
+    required_columns = ['ma7', 'ma34', 'ma170', 'ma453']
+    if not all(col in df_window.columns for col in required_columns):
+        return None, None
+    if df_window[required_columns].isnull().any().any():
+        return None, None
+
+    # 初始化交叉检测
+    gold_cross = {}
+    death_cross = {}
+    for ma in ['ma34', 'ma170', 'ma453']:
+        gold_cross[ma] = (df_window['ma7'] > df_window[ma]) & (df_window['ma7'].shift(1) <= df_window[ma].shift(1))
+        death_cross[ma] = (df_window['ma7'] < df_window[ma]) & (df_window['ma7'].shift(1) >= df_window[ma].shift(1))
+
+    signal_type = None
+    condition_time = None
+
+    # 金叉检测逻辑
+    gold_occurred = [gold_cross[ma].any() for ma in ['ma34', 'ma170', 'ma453']]
+    if all(gold_occurred):
+        gold_times = []
+        for ma in ['ma34', 'ma170', 'ma453']:
+            crosses = df_window.index[gold_cross[ma]]
+            if len(crosses) > 0:
+                gold_times.append(crosses[-1])
+        if gold_times:
+            condition_time = max(gold_times)
+            signal_type = 'MA7 金叉 MA34, MA170, MA453'
+
+    # 死叉检测逻辑（仅在未检测到金叉时执行）
+    if not signal_type:
+        death_occurred = [death_cross[ma].any() for ma in ['ma34', 'ma170', 'ma453']]
+        if all(death_occurred):
+            death_times = []
+            for ma in ['ma34', 'ma170', 'ma453']:
+                crosses = df_window.index[death_cross[ma]]
+                if len(crosses) > 0:
+                    death_times.append(crosses[-1])
+            if death_times:
+                condition_time = max(death_times)
+                signal_type = 'MA7 死叉 MA34, MA170, MA453'
+
+    return signal_type, condition_time
+
+
+# 界面更新函数
+def update_symbol_list(symbols):
+    st.session_state.current_symbols = symbols
+    with symbol_list.container():
+        st.write(f"总数量：{len(symbols)} 个")
+        cols = 3
+        col_items = [[] for _ in range(cols)]
+        for i, symbol in enumerate(symbols):
+            col_items[i % cols].append(symbol)
+
+        cols = st.columns(cols)
+        for i, col in enumerate(cols):
+            with col:
+                for symbol in col_items[i]:
+                    st.write(f"• {symbol}")
+
+
+def update_tab_content(tf):
+    container = st.session_state.result_containers[tf]['container']
+    placeholder = st.session_state.result_containers[tf]['placeholder']
+
+    with container:
+        with placeholder.container():
+            for signal in st.session_state.valid_signals[tf]:
+                st.markdown(f"""
+                **交易对**: {signal['symbol']}【{tf.upper()}】  
+                **信号类型**: {signal['signal_type']}  
+                **条件时间**: {signal['condition_time']}  
+                **检测时间**: {signal['detect_time']}
+                """)
+                st.write("---")
+
+
+# 主监控逻辑
+def monitor_symbols():
+    tabs = st.tabs([f"{tf.upper()} 周期" for tf in TIMEFRAMES])
+    for idx, tf in enumerate(TIMEFRAMES):
+        with tabs[idx]:
+            container = st.container()
+            placeholder = st.empty()
+            st.session_state.result_containers[tf] = {
+                'container': container,
+                'placeholder': placeholder
+            }
+            update_tab_content(tf)
+
+    progress_bar = st.sidebar.progress(0)
+    status_text = st.sidebar.empty()
+    round_info = st.sidebar.empty()
+    new_signals_info = st.sidebar.empty()
+
+    global symbol_list
+    symbol_list = st.sidebar.expander("当前监控交易对列表（前86）", expanded=False)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        while True:
+            start_time = time.time()
+            st.session_state.detection_round += 1
+            current_round_new = {tf: 0 for tf in TIMEFRAMES}
+
+            symbols = get_top_valid_symbols()
+            update_symbol_list(symbols)
+
+            futures = []
+            for idx, symbol in enumerate(symbols):
+                for timeframe in TIMEFRAMES:
+                    progress = (idx + 1) / len(symbols)
+                    futures.append(
+                        executor.submit(
+                            process_symbol_task,
+                            symbol,
+                            timeframe,
+                            progress
+                        )
+                    )
+
+            for future in as_completed(futures):
+                symbol, timeframe, progress, signal = future.result()
+                progress_bar.progress(progress)
+                status_text.text(f"正在检测: {symbol} ({timeframe})")
+
+                if signal:
+                    tf = signal['timeframe']
+                    signal_id = signal['signal_id']
+                    if signal_id not in st.session_state.shown_signals[tf]:
+                        st.session_state.valid_signals[tf].append(signal)
+                        st.session_state.shown_signals[tf].add(signal_id)
+                        current_round_new[tf] += 1
+                        play_alert_sound()
+                        update_tab_content(tf)
+
+            round_info.markdown(f"**检测轮次**: {st.session_state.detection_round}")
+            new_signals_info.markdown("**本轮新增信号**")
+            for tf in TIMEFRAMES:
+                new_signals_info.markdown(f"- {tf.upper()}: {current_round_new[tf]}")
+
+            elapsed = time.time() - start_time
+            sleep_time = max(60 - elapsed, 15)
+            time.sleep(sleep_time)
+
+
+def process_symbol_task(symbol, timeframe, progress):
+    try:
+        ohlcvs = get_cached_ohlcv(symbol, timeframe)
+        df = process_data(ohlcvs, timeframe)
+        signal_type, condition_time = check_cross_conditions(df, timeframe)
+
+        if signal_type and condition_time:
+            detect_time = datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')
+            signal_id = generate_signal_id(
+                symbol,
+                timeframe,
+                condition_time.strftime('%Y-%m-%d %H:%M:%S'),
+                signal_type
+            )
+            return symbol, timeframe, progress, {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'signal_type': signal_type,
+                'condition_time': condition_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'detect_time': detect_time,
+                'signal_id': signal_id
+            }
+    except Exception as e:
+        pass
+    return symbol, timeframe, progress, None
+
+
+def main():
+    st.title('多周期MA交叉实时监控系统（修正版）')
+    with st.expander("核心修正说明", expanded=True):
+        st.markdown("""
+        **关键修复点**：
+        1. **条件时间精准计算**  
+           现在严格保证只取同一信号类型（金叉/死叉）中三个交叉的最后发生时间
+        2. **信号互斥检测**  
+           金叉和死叉检测现在为互斥逻辑，避免同一周期内同时触发两种信号
+        3. **数据验证增强**  
+           新增移动平均线数据完整性检查，排除计算不完整的情况
+        """)
+    st.sidebar.title("智能监控面板")
+    monitor_symbols()
+
 
 if __name__ == "__main__":
-    init_session_state()
-    exchange = init_api()
-    main_ui()
+    main()
