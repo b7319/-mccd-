@@ -18,8 +18,8 @@ import re
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 初始化 Gate.io API
-api_key = 'YOUR_API_KEY'
-api_secret = 'YOUR_API_SECRET'
+api_key = os.getenv('GATEIO_API_KEY', 'YOUR_API_KEY')
+api_secret = os.getenv('GATEIO_API_SECRET', 'YOUR_API_SECRET')
 exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
@@ -40,41 +40,47 @@ TIMEFRAMES = {
 }
 
 # 初始化 session state
-if 'valid_signals' not in st.session_state:
-    st.session_state.valid_signals = defaultdict(list)
-if 'shown_signals' not in st.session_state:
-    st.session_state.shown_signals = defaultdict(set)
-if 'detection_round' not in st.session_state:
-    st.session_state.detection_round = 0
-if 'last_signal_times' not in st.session_state:
-    st.session_state.last_signal_times = {}
-if 'result_containers' not in st.session_state:
-    st.session_state.result_containers = {tf: {'container': None, 'placeholder': None} for tf in TIMEFRAMES}
-if 'failed_symbols' not in st.session_state:
-    st.session_state.failed_symbols = set()
-if 'signal_queue' not in st.session_state:
-    st.session_state.signal_queue = queue.Queue()
-if 'symbols_cache' not in st.session_state:
-    st.session_state.symbols_cache = {'symbols': [], 'timestamp': 0}
-if 'symbols_to_monitor' not in st.session_state:
-    st.session_state.symbols_to_monitor = []
+def init_session_state():
+    if 'valid_signals' not in st.session_state:
+        st.session_state.valid_signals = defaultdict(list)
+    if 'shown_signals' not in st.session_state:
+        st.session_state.shown_signals = defaultdict(set)
+    if 'detection_round' not in st.session_state:
+        st.session_state.detection_round = 0
+    if 'last_signal_times' not in st.session_state:
+        st.session_state.last_signal_times = {}
+    if 'result_containers' not in st.session_state:
+        st.session_state.result_containers = {tf: {'container': None, 'placeholder': None} for tf in TIMEFRAMES}
+    if 'failed_symbols' not in st.session_state:
+        st.session_state.failed_symbols = set()
+    if 'signal_queue' not in st.session_state:
+        st.session_state.signal_queue = queue.Queue()
+    if 'symbols_cache' not in st.session_state:
+        st.session_state.symbols_cache = {'symbols': [], 'timestamp': 0}
+    if 'symbols_to_monitor' not in st.session_state:
+        st.session_state.symbols_to_monitor = []
+    if 'audio_base64' not in st.session_state:
+        st.session_state.audio_base64 = None
 
 # 全局缓存
 ohlcv_cache = {}
 
-
 def get_audio_base64(file_path="alert.wav"):
     """获取音频文件的Base64编码"""
     try:
+        if st.session_state.audio_base64:
+            return st.session_state.audio_base64
+            
         with open(file_path, "rb") as audio_file:
-            return base64.b64encode(audio_file.read()).decode('utf-8')
+            base64_data = base64.b64encode(audio_file.read()).decode('utf-8')
+            st.session_state.audio_base64 = base64_data
+            return base64_data
     except FileNotFoundError:
         logging.error("警报音频文件未找到，请确认alert.wav文件存在")
         return None
     except Exception as e:
         logging.error(f"加载音频文件失败: {str(e)}")
         return None
-
 
 def play_alert_sound():
     """播放警报声音"""
@@ -92,12 +98,10 @@ def play_alert_sound():
         '''
         st.components.v1.html(autoplay_script, height=0)
 
-
 def generate_signal_id(symbol, timeframe, detect_time):
     ts = int(detect_time.timestamp())
     unique_str = f"{symbol}|{timeframe}|{ts}"
     return hashlib.md5(unique_str.encode()).hexdigest()
-
 
 @st.cache_data(ttl=3600)
 def get_valid_symbols():
@@ -168,7 +172,6 @@ def get_valid_symbols():
         logging.error(f"获取交易对失败: {str(e)}")
         return st.session_state.symbols_cache.get('symbols', [])
 
-
 def get_cached_ohlcv(symbol, timeframe, failed_symbols):
     if symbol in failed_symbols:
         return None
@@ -211,7 +214,6 @@ def get_cached_ohlcv(symbol, timeframe, failed_symbols):
     logging.error(f"多次尝试后数据获取失败: {symbol}, {timeframe}")
     return None
 
-
 def process_data(ohlcvs, timeframe):
     if not ohlcvs or len(ohlcvs) < 500:
         return None
@@ -245,7 +247,6 @@ def process_data(ohlcvs, timeframe):
         'ma453': ma453
     }
 
-
 def check_ma_cluster(ma34, ma170, ma453, pct_threshold=0.003):
     """检查三条均线是否在指定百分比内密集排列"""
     try:
@@ -253,18 +254,17 @@ def check_ma_cluster(ma34, ma170, ma453, pct_threshold=0.003):
         current_ma34 = ma34[-1]
         current_ma170 = ma170[-1]
         current_ma453 = ma453[-1]
-
+        
         # 计算最大值和最小值
         max_ma = max(current_ma34, current_ma170, current_ma453)
         min_ma = min(current_ma34, current_ma170, current_ma453)
-
+        
         # 计算密集度
         if max_ma == 0:
             return False
         return (max_ma - min_ma) / max_ma <= pct_threshold
     except Exception:
         return False
-
 
 def detect_signals(data, timeframe):
     if data is None or len(data['closes']) < 500:
@@ -276,16 +276,16 @@ def detect_signals(data, timeframe):
 
     # 获取当前价格
     current_price = data['closes'][-1]
-
+    
     # 获取当前均线值
     current_ma34 = data['ma34'][-1]
     current_ma170 = data['ma170'][-1]
     current_ma453 = data['ma453'][-1]
-
+    
     # 确定价格相对于均线的位置
     max_ma = max(current_ma34, current_ma170, current_ma453)
     min_ma = min(current_ma34, current_ma170, current_ma453)
-
+    
     if current_price > max_ma:
         position = "价格在均线上方"
     elif current_price < min_ma:
@@ -295,7 +295,7 @@ def detect_signals(data, timeframe):
 
     # 计算密集度百分比
     density_percent = ((max_ma - min_ma) / max_ma) * 100
-
+    
     # 创建信号
     signal = {
         'signal_type': "三均线密集排列",
@@ -307,9 +307,8 @@ def detect_signals(data, timeframe):
         'ma453': current_ma453,
         'density_percent': density_percent
     }
-
+    
     return [signal]
-
 
 def update_tab_content(tf):
     container = st.session_state.result_containers[tf]['container']
@@ -327,7 +326,7 @@ def update_tab_content(tf):
                         position_color = "red"
                     else:
                         position_color = "orange"
-
+                    
                     density_percent = signal['density_percent']
                     if density_percent < 0.1:
                         density_color = "purple"
@@ -348,7 +347,6 @@ def update_tab_content(tf):
                     st.markdown(content, unsafe_allow_html=True)
             else:
                 st.markdown("暂无信号")
-
 
 def process_symbol_batch(symbol, failed_symbols):
     signals = []
@@ -385,9 +383,38 @@ def process_symbol_batch(symbol, failed_symbols):
             logging.debug(f"处理 {symbol} ({timeframe}) 出错: {str(e)}")
     return symbol, signals
 
-
 def monitor_symbols():
     """监控交易对"""
+    init_session_state()
+    
+    st.title('三均线密集排列实时监控系统（永续合约成交量前300版）')
+    
+    with st.expander("筛选条件说明", expanded=False):
+        st.markdown("""
+        **核心筛选条件**：
+
+        ### 三均线密集排列：
+        - **均线组合**：MA34, MA170, MA453
+        - **密集度要求**：三条均线的最大值与最小值之间的差值不超过0.3%
+          （即 (max_ma - min_ma) / max_ma <= 0.003）
+        - **价格位置**：
+          - 价格在均线上方（多头趋势）
+          - 价格在均线下方（空头趋势）
+          - 价格在均线之间（震荡趋势）
+        - **警报规则**：相同交易对信号在半小时内只警报显示一次
+
+        **交易对来源**：Gate.io实时成交量前300的USDT永续合约交易对
+
+        **显示信息**：
+        - <span style='color:green; font-weight:bold;'>绿色</span>：价格在均线上方（多头趋势）
+        - <span style='color:red; font-weight:bold;'>红色</span>：价格在均线下方（空头趋势）
+        - <span style='color:orange; font-weight:bold;'>橙色</span>：价格在均线之间（震荡趋势）
+        - 密集度百分比（颜色越深表示越密集）
+        - 当前价格和三条均线的最新值
+
+        **规则**: 同交易对半小时内不重复报警，北京时间，多周期并行
+        """, unsafe_allow_html=True)
+    
     tabs = st.tabs([f"{tf.upper()} 周期" for tf in TIMEFRAMES])
     for idx, tf in enumerate(TIMEFRAMES):
         with tabs[idx]:
@@ -467,12 +494,12 @@ def monitor_symbols():
                 symbol = signal['symbol']
                 signal_id = signal['signal_id']
                 detect_time = signal['detect_time']
-
+                
                 # 检查相同交易对是否在半小时内已有信号
                 last_time = st.session_state.last_signal_times.get(symbol)
                 if last_time and (detect_time - last_time).total_seconds() < 1800:
                     continue  # 跳过半小时内的重复信号
-
+                
                 # 检查信号是否已显示
                 if signal_id not in st.session_state.shown_signals[tf]:
                     st.session_state.valid_signals[tf].append(signal)
@@ -496,37 +523,16 @@ def monitor_symbols():
             sleep_time = max(45 - elapsed, 30)
             time.sleep(sleep_time)
 
-
+# 主函数
 def main():
-    st.title('三均线密集排列实时监控系统（永续合约成交量前300版）')
-    with st.expander("筛选条件说明", expanded=False):
-        st.markdown("""
-        **核心筛选条件**：
-
-        ### 三均线密集排列：
-        - **均线组合**：MA34, MA170, MA453
-        - **密集度要求**：三条均线的最大值与最小值之间的差值不超过0.3%
-          （即 (max_ma - min_ma) / max_ma <= 0.003）
-        - **价格位置**：
-          - 价格在均线上方（多头趋势）
-          - 价格在均线下方（空头趋势）
-          - 价格在均线之间（震荡趋势）
-        - **警报规则**：相同交易对信号在半小时内只警报显示一次
-
-        **交易对来源**：Gate.io实时成交量前300的USDT永续合约交易对
-
-        **显示信息**：
-        - <span style='color:green; font-weight:bold;'>绿色</span>：价格在均线上方（多头趋势）
-        - <span style='color:red; font-weight:bold;'>红色</span>：价格在均线下方（空头趋势）
-        - <span style='color:orange; font-weight:bold;'>橙色</span>：价格在均线之间（震荡趋势）
-        - 密集度百分比（颜色越深表示越密集）
-        - 当前价格和三条均线的最新值
-
-        **规则**: 同交易对半小时内不重复报警，北京时间，多周期并行
-        """, unsafe_allow_html=True)
-    st.sidebar.title("监控面板")
+    st.set_page_config(
+        page_title="三均线密集排列监控系统",
+        page_icon="📈",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
     monitor_symbols()
-
 
 if __name__ == "__main__":
     main()
