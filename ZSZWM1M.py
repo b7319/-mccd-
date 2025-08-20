@@ -299,7 +299,7 @@ def render_cluster_signal(tf, signal):
     content = (
         f"<div style='margin-bottom: 10px; border-left: 4px solid {position_color}; padding-left: 8px;'>"
         f"<a href='{symbol_link}' target='_blank' style='text-decoration: none; color: {position_color}; font-weight: bold;'>"
-        f"🔍🔍🔍🔍 {symbol_simple} [{tf.upper()}] {position}</a> | "
+        f"🔍 {symbol_simple} [{tf.upper()}] {position}</a> | "
         f"密集度: <span style='color: {density_color}; font-weight: bold;'>{density_percent:.3f}%</span> | "
         f"现价: {signal['current_price']:.4f} | MA34: {signal['ma34']:.4f} | MA170: {signal['ma170']:.4f} | MA453: {signal['ma453']:.4f} | 时间: {signal['detect_time'].strftime('%H:%M:%S')}"
         f"</div>"
@@ -435,7 +435,7 @@ def render_cross_signal(tf, signal):
     )
     price_change = ((current_price - cross_price) / cross_price) * 100
     direction_color = "green" if direction == '多头' else "red"
-    signal_icon = "⏳⏳⏳⏳⏳⏳⏳⏳⏳"
+    signal_icon = "⏳"
     price_change_color = "green" if price_change > 0 else "red"
     price_change_arrow = "↑" if price_change > 0 else "↓"
 
