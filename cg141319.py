@@ -1028,7 +1028,7 @@ def main():
     # 关键修改2：添加短期确认信号参数
     CONFIG['cross_short_term_window'] = st.sidebar.number_input(
         '短期确认信号窗口', min_value=1, max_value=10, value=3, step=1,
-help="最近多少根K线内有MA7/MA34同向交叉（默认3根）")
+        help="最近多少根K线内有MA7/MA34同向交叉（默认3根）")
     CONFIG['cross_cooldown_multiplier'] = st.sidebar.number_input(
         '双均线交叉冷却倍数 (interval * X)', min_value=1, max_value=20, value=5, step=1)
     CONFIG['fetch_limit'] = st.sidebar.number_input(
