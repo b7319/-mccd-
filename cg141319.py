@@ -109,8 +109,7 @@ def generate_signal_id_cross(symbol, timeframe, cross_time, signal_type):
 def generate_signal_id_cluster(symbol, timeframe, detect_time):
     ts = int(detect_time.timestamp())
     unique_str = f"{symbol}|{timeframe}|{ts}|cluster"
-   极速哈希值 = hashlib.md5(unique_str.encode()).hexdigest()
-    return 极速哈希值
+    return hashlib.md5(unique_str.encode()).hexdigest()
 
 # 简化交易对名称
 def simplify_symbol(symbol):
@@ -1030,3 +1029,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
