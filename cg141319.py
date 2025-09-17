@@ -15,13 +15,15 @@ import threading
 import os
 import html
 import traceback
+import requests
+from io import BytesIO
 
 # ========== 基础配置 ==========
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# 替换为你的 Gate.io API（建议只读）
-API_KEY = "YOUR_API_KEY"
-API_SECRET = "YOUR_API_SECRET"
+# 使用环境变量或 Streamlit secrets 管理 API 密钥
+API_KEY = st.secrets.get("GATEIO_API_KEY", "YOUR_API_KEY")
+API_SECRET = st.secrets.get("GATEIO_API_SECRET", "YOUR_API_SECRET")
 
 beijing_tz = pytz.timezone('Asia/Shanghai')
 
@@ -87,7 +89,6 @@ if 'right_panel_css_injected' not in st.session_state:
 
 ohlcv_cache = {}
 
-
 # ========== 工具函数 ==========
 def escape_html(text):
     """转义HTML特殊字符"""
@@ -95,43 +96,38 @@ def escape_html(text):
         return ""
     return html.escape(str(text))
 
-
 def generate_signal_id_cross(symbol, timeframe, cross_time, signal_type):
     ts = int(cross_time.timestamp())
     unique_str = f"{symbol}|{timeframe}|{ts}|{signal_type}|cross"
     return hashlib.md5(unique_str.encode()).hexdigest()
-
 
 def generate_signal_id_cluster(symbol, timeframe, detect_time):
     ts = int(detect_time.timestamp())
     unique_str = f"{symbol}|{timeframe}|{ts}|cluster"
     return hashlib.md5(unique_str.encode()).hexdigest()
 
-
 # 简化交易对名称
 def simplify_symbol(symbol):
     return symbol.split('/')[0].lower()
-
 
 # 生成交易对链接
 def generate_symbol_link(symbol):
     base_symbol = simplify_symbol(symbol)
     return f"https://www.aicoin.com/chart/gate_{base_symbol}swapusdt"
 
-
 # ========== 音频处理函数 ==========
-def get_audio_base64(file_path="D:\\pycharm_study\\y1314.wav"):
+def get_audio_base64():
     """获取音频文件的Base64编码"""
     try:
-        with open(file_path, "rb") as audio_file:
-            return base64.b64encode(audio_file.read()).decode('utf-8')
-    except FileNotFoundError:
-        logging.error("警报音频文件未找到，请确认alert.wav文件存在")
+        # 从网络加载音频文件，避免本地文件系统依赖
+        audio_url = "https://assets.mixkit.co/sfx/preview/mixkit-alarm-digital-clock-beep-989.mp3"
+        response = requests.get(audio_url)
+        if response.status_code == 200:
+            return base64.b64encode(response.content).decode('utf-8')
         return None
     except Exception as e:
         logging.error(f"加载音频文件失败: {str(e)}")
         return None
-
 
 def play_alert_sound():
     """播放警报声音"""
@@ -139,7 +135,7 @@ def play_alert_sound():
     if audio_base64:
         autoplay_script = f'''
         <audio autoplay>
-        <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
+        <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
         </audio>
         <script>
         document.querySelector('audio') && document.querySelector('audio').play().catch(error => {{
@@ -149,12 +145,19 @@ def play_alert_sound():
         '''
         st.components.v1.html(autoplay_script, height=0)
 
-
 # ========== 交易对列表与 OHLCV ==========
 @st.cache_data(ttl=3600)
 def get_valid_symbols(api_key, api_secret, top_n=300):
     try:
-        exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True})
+        exchange = ccxt.gateio({
+            'apiKey': api_key, 
+            'secret': api_secret, 
+            'enableRateLimit': True,
+            'timeout': 30000,
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        })
         markets = exchange.load_markets(True)
         tickers = exchange.fetch_tickers(params={'type': 'swap'})
         volume_data = []
@@ -178,7 +181,6 @@ def get_valid_symbols(api_key, api_secret, top_n=300):
     except Exception as e:
         logging.error(f"获取交易对失败: {e}")
         return []
-
 
 def get_cached_ohlcv(exchange, symbol, timeframe, failed_symbols):
     if symbol in failed_symbols:
@@ -209,7 +211,6 @@ def get_cached_ohlcv(exchange, symbol, timeframe, failed_symbols):
     failed_symbols.add(symbol)
     return None
 
-
 def process_data_all(ohlcvs):
     if not ohlcvs or len(ohlcvs) < 513:
         return None
@@ -231,7 +232,6 @@ def process_data_all(ohlcvs):
     except ValueError:
         logging.error(f"无效的收盘价数据: {ohlcvs}")
         return None
-
 
 # ========== 三均线密集（新版规则） ==========
 def find_cluster_indices(data, pct_threshold):
@@ -255,7 +255,6 @@ def find_cluster_indices(data, pct_threshold):
         except Exception:
             continue
     return idxs
-
 
 def detect_cluster_signals(data, symbol, timeframe):
     # 新规则：在最近 X 根内发生，且在最近 Y 根内恰好只有一次发生
@@ -296,7 +295,6 @@ def detect_cluster_signals(data, symbol, timeframe):
         }
         res.append(signal)
     return res
-
 
 def render_cluster_signal(tf, signal):
     position = "价格在均线之间"
@@ -339,7 +337,6 @@ def render_cluster_signal(tf, signal):
         f"</div>"
     )
     st.markdown(content, unsafe_allow_html=True)
-
 
 # ========== 双均线交叉（修改为支持4h级别） ==========
 def detect_cross_signals(data, timeframe, symbol):
@@ -538,7 +535,6 @@ def detect_cross_signals(data, timeframe, symbol):
 
     return formatted_signals, current_price
 
-
 def render_cross_signal(tf, signal):
     direction, signal_type, cross_time, cross_price, current_price, price_change, density_percent = (
         signal['direction'], signal['signal_type'], signal['cross_time'],
@@ -573,7 +569,6 @@ def render_cross_signal(tf, signal):
     )
     st.markdown(content, unsafe_allow_html=True)
 
-
 # ========== 右侧固定展示栏：最新68条静态展示 ==========
 def _normalize_detect_dt(val):
     # 统一转为带时区的 datetime
@@ -588,7 +583,6 @@ def _normalize_detect_dt(val):
             return datetime.now(beijing_tz)
     return datetime.now(beijing_tz)
 
-
 def clean_signal_data(signal):
     """确保信号数据中的所有字段都是有效类型"""
     for key in ['current_price', 'ma34', 'ma170', 'ma453', 'density_percent', 'price_change']:
@@ -598,7 +592,6 @@ def clean_signal_data(signal):
             except (TypeError, ValueError):
                 signal[key] = 0.0
     return signal
-
 
 def _enqueue_latest(signal, tf, strategy, symbol, signal_id):
     """将标准化后的信号加入右侧队列（保留最近68条，最新的在最上方）"""
@@ -630,7 +623,6 @@ def _enqueue_latest(signal, tf, strategy, symbol, signal_id):
     # 添加到队列前端（最新的在最前面）
     st.session_state.latest_signals_ticker.appendleft(entry)
     logging.info(f"加入右侧栏队列: {symbol} {tf} {strategy}")
-
 
 def render_right_sidebar():
     """右侧固定悬浮栏（非 st.sidebar），静态展示最新68条信号"""
@@ -802,7 +794,6 @@ def render_right_sidebar():
         st.session_state.right_panel_css_injected = False
         st.experimental_rerun()
 
-
 # ========== UI：标签页 ==========
 def build_tabs():
     # 优化：将标签导航栏固定在页面底部中间位置
@@ -845,7 +836,6 @@ def build_tabs():
             placeholder = st.empty()
             st.session_state.result_containers[k] = {'container': container, 'placeholder': placeholder}
 
-
 def update_tab_content(tf, strategy):
     container = st.session_state.result_containers[(tf, strategy)]['container']
     placeholder = st.session_state.result_containers[(tf, strategy)]['placeholder']
@@ -860,7 +850,6 @@ def update_tab_content(tf, strategy):
                     render_cluster_signal(tf, s)
                 else:
                     render_cross_signal(tf, s)
-
 
 # ========== 处理与监控 ==========
 def process_symbol_timeframe(exchange, symbol, timeframe, failed_symbols):
@@ -888,9 +877,16 @@ def process_symbol_timeframe(exchange, symbol, timeframe, failed_symbols):
         logging.debug(f"处理 {symbol}({timeframe}) 异常: {e}")
         return symbol, out_cluster, out_cross
 
-
 def monitor_symbols(api_key, api_secret):
-    exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 30000})
+    exchange = ccxt.gateio({
+        'apiKey': api_key, 
+        'secret': api_secret, 
+        'enableRateLimit': True, 
+        'timeout': 30000,
+        'headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+    })
 
     build_tabs()
 
@@ -993,7 +989,6 @@ def monitor_symbols(api_key, api_secret):
             sleep_time = max(45 - elapsed, 30)
             time.sleep(sleep_time)
 
-
 # ========== 入口：侧栏参数 ==========
 def main():
     st.title('一体化监控（v2） - 三均线密集 & 双均线交叉（1m/5m/30m/4h）')
@@ -1033,7 +1028,7 @@ def main():
     # 关键修改2：添加短期确认信号参数
     CONFIG['cross_short_term_window'] = st.sidebar.number_input(
         '短期确认信号窗口', min_value=1, max_value=10, value=3, step=1,
-        help="最近多少根K线内有MA7/MA34同向交叉（默认3根）")
+help="最近多少根K线内有MA7/MA34同向交叉（默认3根）")
     CONFIG['cross_cooldown_multiplier'] = st.sidebar.number_input(
         '双均线交叉冷却倍数 (interval * X)', min_value=1, max_value=20, value=5, step=1)
     CONFIG['fetch_limit'] = st.sidebar.number_input(
@@ -1055,7 +1050,7 @@ def main():
     api_secret = st.sidebar.text_input('Gate.io API Secret', value=API_SECRET, type='password')
     start_btn = st.sidebar.button('开始监控')
     st.sidebar.markdown(
-        '提示：三均线密集的判定为：在最近 X 根K线内发生，且在最近 Y 根内唯一，从而排除反复窄幅盘整的噪声。'.format())
+        '提示：三均线密集的判定为：在最近 X 根K线内发生，且在最近 Y 根内唯一，从而排除反复窄幅盘整的噪声。')
     with st.expander('筛选规则说明（简要）', expanded=False):
         st.markdown('''- 三均线密集：MA34/MA170/MA453 在某一根 K 线处最大最小差 <= 密集阈值，且该密集发生位置满足：
             1) 出现在最近 X 根 K 线内（X 可调，默认为 13）
