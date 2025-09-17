@@ -76,6 +76,10 @@ if 'symbols_refresh_timer' not in st.session_state:
     st.session_state.symbols_refresh_timer = None
 if 'last_symbols_refresh' not in st.session_state:
     st.session_state.last_symbols_refresh = 0
+if 'status_text' not in st.session_state:
+    st.session_state.status_text = st.empty()
+if 'stats_text' not in st.session_state:
+    st.session_state.stats_text = st.empty()
 
 # 新增：右侧固定栏所需的会话状态
 if 'latest_signals_ticker' not in st.session_state:
@@ -488,7 +492,7 @@ def detect_cross_signals(data, timeframe, symbol):
                             density_ratio = (high_price - low_price) / low_price
                             if density_ratio <= density_threshold:
                                 density_percent = density_ratio * 100
-                                valid_signals.append(('空头', signal_type, cross_time, cross_price,
+                                valid_signals.append(('空极', signal_type, cross_time, cross_price,
                                                       current_price, density_percent))
                                 break
 
@@ -517,10 +521,14 @@ def detect_cross_signals(data, timeframe, symbol):
 
 
 def render_cross_signal(tf, signal):
-    direction, signal_type, cross_time, cross_price, current_price, price_change, density_percent = (
-        signal['direction'], signal['signal_type'], signal['cross_time'],
-        signal['cross_price'], signal['current_price'], signal['price_change'], signal['density_percent']
-    )
+    direction = signal['direction']
+    signal_type = signal['signal_type']
+    cross_time = signal['cross_time']
+    cross_price = signal['cross_price']
+    current_price = signal['current_price']
+    price_change = signal['price_change']
+    density_percent = signal['density_percent']
+    
     direction_color = "green" if direction == '多头' else "red"
     signal_icon = "⏳"
     price_change_color = "green" if price_change > 0 else "red"
@@ -642,7 +650,7 @@ def render_right_sidebar():
                 color: #666;
                 margin-bottom: 8px;
             }
-            #latest-fixed-panel .item {
+            #latest-f极el .item {
                 font-size: 13px;
                 line-height: 1.35;
                 padding: 6px 8px;
@@ -689,7 +697,7 @@ def render_right_sidebar():
                     # 判断价格位置上/下/之间
                     try:
                         max_ma = max(s['ma34'], s['ma170'], s['ma453'])
-                        min_ma = min(s['ma34'], s['ma170'], s['ma453'])
+                        min_ma = min(s['ma34'], s['ma170'], s极['ma453'])
                         if s['current_price'] > max_ma:
                             edge_color = "green"
                             pos_text = "价格在均线上方"
@@ -941,6 +949,18 @@ def monitoring_loop(api_key, api_secret):
                             # 加入右侧最新68条队列
                             _enqueue_latest(sig, tf, 'cross', symbol, signal_id)
 
+            # 更新UI状态
+            st.session_state.status_text.text(f"轮次: {st.session_state.detection_round} | 新信号: {dict(new_signals)}")
+            st.session_state.stats_text.text(f"失败交易对: {len(st.session_state.failed_symbols)} | 监控交易对: {len(symbols)}")
+            
+            # 更新所有标签页内容
+            for tf in TIMEFRAMES:
+                for strategy in STRATEGIES:
+                    update_tab_content(tf, strategy)
+            
+            # 渲染右侧栏
+            render_right_sidebar()
+            
             # 本轮结束后更新统计信息
             logging.info(f"轮次: {st.session_state.detection_round} | 新信号: {dict(new_signals)} | 失败交易对: {len(st.session_state.failed_symbols)}")
             elapsed = time.time() - start_time
@@ -968,6 +988,10 @@ def start_monitoring(api_key, api_secret):
     )
     st.session_state.monitoring_thread.start()
     logging.info("监控线程已启动")
+    
+    # 显示初始状态
+    st.session_state.status_text.text("监控已启动，正在初始化...")
+    st.session_state.stats_text.text(f"监控交易对: {len(st.session_state.symbols_to_monitor)}")
 
 
 # ========== 入口：侧栏参数 ==========
@@ -988,7 +1012,7 @@ def main():
 
     # 长短交叉点密集度阈值配置 - 每个时间框架单独设置
     st.sidebar.subheader('长短交叉点密集度阈值（%）')
-    CONFIG['price_diff_threshold_pct_by_tf']['1m'] = st.sidebar.number_input(
+    CONFIG['price_diff_threshold_pct_by_tf']['1极m'] = st.sidebar.number_input(
         '1m级别密集度阈值', min_value=0.01, max_value=5.0, value=0.86, step=0.01, key='price_diff_1m')
     CONFIG['price_diff_threshold_pct_by_tf']['5m'] = st.sidebar.number_input(
         '5m级别密集度阈值', min_value=0.01, max_value=5.0, value=1.86, step=0.01, key='price_diff_5m')
@@ -1044,13 +1068,9 @@ def main():
     # 构建标签页
     build_tabs()
     
-    # 更新所有标签页内容
-    for tf in TIMEFRAMES:
-        for strategy in STRATEGIES:
-            update_tab_content(tf, strategy)
-    
-    # 渲染右侧栏
-    render_right_sidebar()
+    # 状态显示区域
+    st.session_state.status_text = st.empty()
+    st.session_state.stats_text = st.empty()
     
     if start_btn:
         if not api_key or not api_secret:
