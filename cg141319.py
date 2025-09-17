@@ -12,6 +12,7 @@ import logging
 import queue
 import html
 import traceback
+import threading
 
 # ========== 基础配置 ==========
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -44,41 +45,52 @@ CONFIG = {
     'cross_short_term_window': 3,  # 短期确认信号窗口：最近3根K线内有MA7/MA34同向交叉
     'fetch_limit': 1000,
     'max_workers': 4,
-    'top_n_symbols': 300  # 默认交易对数量
+    'top_n_symbols': 300,  # 默认交易对数量
+    'loop_interval': 60  # 循环间隔时间（秒）
 }
 
 # Session 初始化
-if 'valid_signals' not in st.session_state:
-    st.session_state.valid_signals = defaultdict(list)
-if 'shown_signals' not in st.session_state:
-    st.session_state.shown_signals = defaultdict(set)
-if 'detection_round' not in st.session_state:
-    st.session_state.detection_round = 0
-if 'last_signal_times' not in st.session_state:
-    st.session_state.last_signal_times = {}
-if 'result_containers' not in st.session_state:
-    st.session_state.result_containers = {}
-if 'failed_symbols' not in st.session_state:
-    st.session_state.failed_symbols = set()
-if 'signal_queue' not in st.session_state:
-    st.session_state.signal_queue = queue.Queue()
-if 'symbols_cache' not in st.session_state:
-    st.session_state.symbols_cache = {'symbols': [], 'timestamp': 0}
-if 'symbols_to_monitor' not in st.session_state:
-    st.session_state.symbols_to_monitor = []
-if 'all_signals' not in st.session_state:
-    st.session_state.all_signals = []
+def init_session_state():
+    if 'valid_signals' not in st.session_state:
+        st.session_state.valid_signals = defaultdict(list)
+    if 'shown_signals' not in st.session_state:
+        st.session_state.shown_signals = defaultdict(set)
+    if 'detection_round' not in st.session_state:
+        st.session_state.detection_round = 0
+    if 'last_signal_times' not in st.session_state:
+        st.session_state.last_signal_times = {}
+    if 'result_containers' not in st.session_state:
+        st.session_state.result_containers = {}
+    if 'failed_symbols' not in st.session_state:
+        st.session_state.failed_symbols = set()
+    if 'signal_queue' not in st.session_state:
+        st.session_state.signal_queue = queue.Queue()
+    if 'symbols_cache' not in st.session_state:
+        st.session_state.symbols_cache = {'symbols': [], 'timestamp': 0}
+    if 'symbols_to_monitor' not in st.session_state:
+        st.session_state.symbols_to_monitor = []
+    if 'all_signals' not in st.session_state:
+        st.session_state.all_signals = []
+    if 'monitor_thread' not in st.session_state:
+        st.session_state.monitor_thread = None
+    if 'monitor_running' not in st.session_state:
+        st.session_state.monitor_running = False
+    if 'latest_signals_ticker' not in st.session_state:
+        st.session_state.latest_signals_ticker = deque(maxlen=68)
+    if 'ticker_seen' not in st.session_state:
+        st.session_state.ticker_seen = set()
+    if 'right_panel_placeholder' not in st.session_state:
+        st.session_state.right_panel_placeholder = None
+    if 'right_panel_css_injected' not in st.session_state:
+        st.session_state.right_panel_css_injected = False
+    if 'progress_bar' not in st.session_state:
+        st.session_state.progress_bar = None
+    if 'status_text' not in st.session_state:
+        st.session_state.status_text = None
+    if 'stats' not in st.session_state:
+        st.session_state.stats = None
 
-# 新增：右侧固定栏所需的会话状态
-if 'latest_signals_ticker' not in st.session_state:
-    st.session_state.latest_signals_ticker = deque(maxlen=68)  # 修改为保留最新68条
-if 'ticker_seen' not in st.session_state:
-    st.session_state.ticker_seen = set()  # 用于去重
-if 'right_panel_placeholder' not in st.session_state:
-    st.session_state.right_panel_placeholder = None
-if 'right_panel_css_injected' not in st.session_state:
-    st.session_state.right_panel_css_injected = False
-
+# 全局变量
 ohlcv_cache = {}
 
 # 设置页面配置
@@ -475,8 +487,8 @@ def detect_cross_signals(data, timeframe, symbol):
                     for d, st_t, st_p in short_term_signals:
                         if d == '空头' and st_t >= cross_time:
                             # 比较两个价格的高低
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
+                            high_price = max(st_p, round_price)
+                            low_price = min(st_p, round_price)
                             # 计算密集度百分比: [(高价数值 - 低价数值) / 低价数值] * 100%
                             density_ratio = (high_price - low_price) / low_price
                             if density_ratio <= density_threshold:
@@ -848,9 +860,6 @@ def process_symbol_timeframe(exchange, symbol, timeframe, failed_symbols):
         cross_list, current_price = detect_cross_signals(data, timeframe, symbol)
         detect_time = datetime.now(beijing_tz)
         for signal in cross_list:
-            # 在 detect_cross_signals 内部已经添加了 symbol，所以这里可以省略
-            # signal['symbol'] = symbol
-            # signal['timeframe'] = timeframe
             signal['detect_time'] = detect_time.strftime('%H:%M:%S')  # 更新检测时间
             out_cross.append(signal)
         return symbol, out_cluster, out_cross
@@ -859,11 +868,9 @@ def process_symbol_timeframe(exchange, symbol, timeframe, failed_symbols):
         return symbol, out_cluster, out_cross
 
 
-def monitor_symbols(api_key, api_secret):
+def monitor_loop(api_key, api_secret):
     exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 30000})
-
-    build_tabs()
-
+    
     # 初始化右侧固定展示栏
     render_right_sidebar()
 
@@ -884,21 +891,25 @@ def monitor_symbols(api_key, api_secret):
                 # 简化交易对名称显示
                 simple_s = simplify_symbol(s)
                 st.markdown(f"<span style='color:{color};'>• {simple_s}</span>", unsafe_allow_html=True)
-    progress_bar = st.sidebar.progress(0)
-    status_text = st.sidebar.empty()
-    stats = st.sidebar.empty()
+    
+    progress_bar = st.session_state.progress_bar
+    status_text = st.session_state.status_text
+    stats = st.session_state.stats
+    
     max_workers = CONFIG.get('max_workers', 4)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        while True:
-            start_time = time.time()
-            st.session_state.detection_round += 1
-            new_signals = defaultdict(int)
-            symbols = [s for s in st.session_state.symbols_to_monitor if s not in st.session_state.failed_symbols]
-            if not symbols:
-                time.sleep(30)
-                continue
-            failed_copy = st.session_state.failed_symbols.copy()
-            futures = []
+    
+    while st.session_state.monitor_running:
+        start_time = time.time()
+        st.session_state.detection_round += 1
+        new_signals = defaultdict(int)
+        symbols = [s for s in st.session_state.symbols_to_monitor if s not in st.session_state.failed_symbols]
+        if not symbols:
+            time.sleep(30)
+            continue
+        
+        failed_copy = st.session_state.failed_symbols.copy()
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for s in symbols:
                 for tf in TIMEFRAMES:
                     futures.append(executor.submit(process_symbol_timeframe, exchange, s, tf, failed_copy))
@@ -906,8 +917,10 @@ def monitor_symbols(api_key, api_secret):
             # 改为逐个处理完成的任务
             for i, fut in enumerate(as_completed(futures)):
                 progress = (i + 1) / len(futures)
-                progress_bar.progress(progress)
-                status_text.text(f"检测进度: {progress * 100:.1f}%")
+                if progress_bar:
+                    progress_bar.progress(progress)
+                if status_text:
+                    status_text.text(f"检测进度: {progress * 100:.1f}%")
 
                 symbol, cluster_signals, cross_signals = fut.result()
 
@@ -941,21 +954,24 @@ def monitor_symbols(api_key, api_secret):
                         # 立即更新对应的标签页
                         update_tab_content(tf, 'cross')
                         # 加入右侧最新68条队列
-                        _enqueue_latest(sig, tf, 'cross', symbol, signal_id)  # 修复这里：使用 sig 而不是 st
+                        _enqueue_latest(sig, tf, 'cross', symbol, signal_id)
 
                 # 每次有信号更新时都刷新右侧栏
                 render_right_sidebar()
 
-            # 本轮结束后更新统计信息
+        # 本轮结束后更新统计信息
+        if stats:
             stats.markdown(
                 f"轮次: {st.session_state.detection_round} | 新信号: {dict(new_signals)} | 失败交易对: {len(st.session_state.failed_symbols)}")
-            elapsed = time.time() - start_time
-            sleep_time = max(45 - elapsed, 30)
-            time.sleep(sleep_time)
+        
+        elapsed = time.time() - start_time
+        sleep_time = max(CONFIG['loop_interval'] - elapsed, 30)
+        time.sleep(sleep_time)
 
 
 # ========== 入口：侧栏参数 ==========
 def main():
+    init_session_state()
     st.title('一体化监控（v2） - 三均线密集 & 双均线交叉（1m/5m/30m/4h）')
     st.sidebar.header('运行参数（可调整）')
 
@@ -1003,6 +1019,9 @@ def main():
     # 新增交易对数量选择
     CONFIG['top_n_symbols'] = st.sidebar.selectbox(
         '按交易额获取交易对数量', [50, 100, 150, 200, 300], index=4)
+    # 新增循环间隔时间
+    CONFIG['loop_interval'] = st.sidebar.number_input(
+        '检测间隔时间（秒）', min_value=30, max_value=600, value=60, step=10)
 
     for tf in TIMEFRAMES:
         TIMEFRAMES[tf]['max_bars'] = int(CONFIG['fetch_limit'])
@@ -1012,7 +1031,44 @@ def main():
     st.sidebar.subheader('API & 控制')
     api_key = st.sidebar.text_input('Gate.io API Key', value=API_KEY)
     api_secret = st.sidebar.text_input('Gate.io API Secret', value=API_SECRET, type='password')
-    start_btn = st.sidebar.button('开始监控')
+    
+    # 创建UI元素
+    build_tabs()
+    
+    # 创建进度条和状态文本
+    st.session_state.progress_bar = st.sidebar.progress(0)
+    st.session_state.status_text = st.sidebar.empty()
+    st.session_state.stats = st.sidebar.empty()
+    
+    col1, col2 = st.sidebar.columns(2)
+    start_btn = col1.button('开始监控')
+    stop_btn = col2.button('停止监控')
+    
+    if stop_btn:
+        st.session_state.monitor_running = False
+        if st.session_state.monitor_thread and st.session_state.monitor_thread.is_alive():
+            st.session_state.monitor_thread.join(timeout=5)
+        st.session_state.status_text.text("监控已停止")
+        st.experimental_rerun()
+    
+    if start_btn:
+        if not api_key or not api_secret:
+            st.sidebar.error('请填写 API Key/Secret')
+            return
+            
+        st.session_state.monitor_running = True
+        st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
+        
+        # 启动监控线程
+        if not st.session_state.monitor_thread or not st.session_state.monitor_thread.is_alive():
+            st.session_state.monitor_thread = threading.Thread(
+                target=monitor_loop, 
+                args=(api_key, api_secret),
+                daemon=True
+            )
+            st.session_state.monitor_thread.start()
+            st.session_state.status_text.text("监控已启动")
+    
     st.sidebar.markdown(
         '提示：三均线密集的判定为：在最近 X 根K线内发生，且在最近 Y 根内唯一，从而排除反复窄幅盘整的噪声。')
     with st.expander('筛选规则说明（简要）', expanded=False):
@@ -1021,12 +1077,10 @@ def main():
                     2) 在最近 Y 根 K 线内（Y 可调，默认为 86）恰好只有一次密集发生 —— 用来排除反复盘整造成的噪声
                     - 双均线交叉：沿用原 513.py 的双均线组合 + MA7 与 MA34 的短期确认
                     - 冷却：三均线密集 -> 每一次具体发生的信号只展示一次（使用发生时点唯一ID）；双均线交叉 -> interval * 冷却倍数秒内不重复''')
-    if start_btn:
-        if not api_key or not api_secret:
-            st.sidebar.error('请填写 API Key/Secret')
-            return
-        st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
-        monitor_symbols(api_key, api_secret)
+    
+    # 显示当前监控状态
+    if st.session_state.monitor_running:
+        st.sidebar.success("监控运行中...")
     else:
         st.info('配置完成后点击侧栏的【开始监控】按钮以启动检测。')
 
