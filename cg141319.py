@@ -1,4 +1,4 @@
-# integrated_streamlit_app_v2.py
+# integrated_streamlit_app_v2_fixed.py
 import ccxt
 import numpy as np
 from datetime import datetime
@@ -289,6 +289,7 @@ def render_cluster_signal(tf, signal):
         position = "价格在均线上方"
         position_color = "green"
     elif current_price < min_ma:
+        position = "价格在均线下方"
         position_color = "red"
     else:
         position_color = "orange"
@@ -487,8 +488,8 @@ def detect_cross_signals(data, timeframe, symbol):
                     for d, st_t, st_p in short_term_signals:
                         if d == '空头' and st_t >= cross_time:
                             # 比较两个价格的高低
-                            high_price = max(st_p, round_price)
-                            low_price = min(st_p, round_price)
+                            high_price = max(st_p, cross_price)
+                            low_price = min(st_p, cross_price)
                             # 计算密集度百分比: [(高价数值 - 低价数值) / 低价数值] * 100%
                             density_ratio = (high_price - low_price) / low_price
                             if density_ratio <= density_threshold:
@@ -782,7 +783,6 @@ def render_right_sidebar():
         # 尝试重新创建右侧栏
         st.session_state.right_panel_placeholder = None
         st.session_state.right_panel_css_injected = False
-        st.experimental_rerun()
 
 
 # ========== UI：标签页 ==========
@@ -1049,7 +1049,6 @@ def main():
         if st.session_state.monitor_thread and st.session_state.monitor_thread.is_alive():
             st.session_state.monitor_thread.join(timeout=5)
         st.session_state.status_text.text("监控已停止")
-        st.experimental_rerun()
     
     if start_btn:
         if not api_key or not api_secret:
