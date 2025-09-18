@@ -12,13 +12,19 @@ import queue
 import html
 import sqlite3
 import json
-import requests
 import os
+import sys
 
 # ========== 基础配置 ==========
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # 确保日志输出到 Streamlit 的终端
+    ]
+)
 
-# 从环境变量获取 API 密钥，优先于硬编码
+# 从环境变量获取 API 密钥
 API_KEY = os.getenv('GATEIO_API_KEY', "YOUR_API_KEY")
 API_SECRET = os.getenv('GATEIO_API_SECRET', "YOUR_API_SECRET")
 
@@ -44,9 +50,8 @@ CONFIG = {
     'cross_unique_window': 513,
     'cross_short_term_window': 3,
     'fetch_limit': 1000,
-    'max_workers': 4,
+    'max_workers': 2,  # 降低并发以减少 API 压力
     'top_n_symbols': 300,
-    #'heartbeat_url': "https://cg141319.streamlit.app/health"  # 替换为你的 Streamlit 应用健康检查 URL
 }
 
 # Session 初始化
@@ -97,24 +102,32 @@ st.set_page_config(
 
 # ========== 数据库初始化 ==========
 def init_db():
-    conn = sqlite3.connect('signals.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS signals (
-            id TEXT PRIMARY KEY,
-            symbol TEXT,
-            timeframe TEXT,
-            strategy TEXT,
-            signal_data TEXT,
-            detect_time TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        # 使用 /tmp 目录确保云端可写
+        db_path = os.path.join('/tmp', 'signals.db')
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS signals (
+                id TEXT PRIMARY KEY,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy TEXT,
+                signal_data TEXT,
+                detect_time TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        logging.info(f"数据库初始化成功: {db_path}")
+    except Exception as e:
+        logging.error(f"数据库初始化失败: {e}")
+        st.error(f"数据库初始化失败: {e}")
 
 def save_signal_to_db(signal_id, symbol, timeframe, strategy, signal_data):
     try:
-        conn = sqlite3.connect('signals.db')
+        db_path = os.path.join('/tmp', 'signals.db')
+        conn = sqlite3.connect(db_path)
         c = conn.cursor()
         c.execute('INSERT OR REPLACE INTO signals (id, symbol, timeframe, strategy, signal_data, detect_time) VALUES (?, ?, ?, ?, ?, ?)',
                   (signal_id, symbol, timeframe, strategy, json.dumps(signal_data, default=str), signal_data.get('detect_time')))
@@ -123,17 +136,21 @@ def save_signal_to_db(signal_id, symbol, timeframe, strategy, signal_data):
         logging.info(f"信号保存到数据库: {symbol} {timeframe} {strategy}")
     except Exception as e:
         logging.error(f"保存信号到数据库失败: {e}")
+        st.warning(f"保存信号失败: {e}")
 
 def load_signals_from_db():
     try:
-        conn = sqlite3.connect('signals.db')
+        db_path = os.path.join('/tmp', 'signals.db')
+        if not os.path.exists(db_path):
+            logging.info("数据库文件不存在，跳过加载")
+            return
+        conn = sqlite3.connect(db_path)
         c = conn.cursor()
         c.execute('SELECT id, symbol, timeframe, strategy, signal_data FROM signals')
         rows = c.fetchall()
         for row in rows:
             signal_id, symbol, timeframe, strategy, signal_data = row
             signal = json.loads(signal_data)
-            # 确保 detect_time 是 datetime 对象
             if isinstance(signal['detect_time'], str):
                 try:
                     signal['detect_time'] = datetime.fromisoformat(signal['detect_time'])
@@ -154,10 +171,12 @@ def load_signals_from_db():
         logging.info("历史信号从数据库加载完成")
     except Exception as e:
         logging.error(f"加载信号失败: {e}")
+        st.error(f"加载信号失败: {e}")
 
 def clean_old_signals(max_age_hours=24):
     try:
-        conn = sqlite3.connect('signals.db')
+        db_path = os.path.join('/tmp', 'signals.db')
+        conn = sqlite3.connect(db_path)
         c = conn.cursor()
         threshold = (datetime.now(beijing_tz) - timedelta(hours=max_age_hours)).isoformat()
         c.execute('DELETE FROM signals WHERE detect_time < ?', (threshold,))
@@ -184,7 +203,10 @@ def generate_signal_id_cluster(symbol, timeframe, detect_time):
     return hashlib.md5(unique_str.encode()).hexdigest()
 
 def simplify_symbol(symbol):
-    return symbol.split('/')[0].lower()
+    try:
+        return symbol.split('/')[0].lower()
+    except:
+        return symbol
 
 def generate_symbol_link(symbol):
     base_symbol = simplify_symbol(symbol)
@@ -211,11 +233,13 @@ def get_valid_symbols(api_key, api_secret, top_n=300):
             try:
                 exchange.fetch_ohlcv(s, '1m', limit=2)
                 final.append(s)
-            except Exception:
-                logging.debug(f"排除交易对: {s}")
+            except Exception as e:
+                logging.debug(f"排除交易对 {s}: {e}")
+        logging.info(f"获取到 {len(final)} 个有效交易对")
         return final
     except Exception as e:
         logging.error(f"获取交易对失败: {e}")
+        st.error(f"获取交易对失败: {e}")
         return []
 
 def get_cached_ohlcv(exchange, symbol, timeframe, failed_symbols):
@@ -242,7 +266,7 @@ def get_cached_ohlcv(exchange, symbol, timeframe, failed_symbols):
                 return None
         except Exception as e:
             logging.debug(f"获取OHLCV错误({symbol},{timeframe}): {e}")
-            time.sleep(1 + attempt)
+            time.sleep(2 + attempt)  # 增加重试间隔
     failed_symbols.add(symbol)
     return None
 
@@ -264,8 +288,8 @@ def process_data_all(ohlcvs):
         closes = closes[-min_len:]
         timestamps = timestamps[-min_len:]
         return {'timestamps': timestamps, 'closes': closes, 'ma7': ma7, 'ma34': ma34, 'ma170': ma170, 'ma453': ma453}
-    except ValueError:
-        logging.error(f"无效的收盘价数据: {ohlcvs}")
+    except ValueError as e:
+        logging.error(f"无效的收盘价数据: {e}")
         return None
 
 # ========== 三均线密集 ==========
@@ -326,270 +350,288 @@ def detect_cluster_signals(data, symbol, timeframe):
     return res
 
 def render_cluster_signal(tf, signal):
-    position = "价格在均线之间"
-    current_price = signal['current_price']
-    max_ma = max(signal['ma34'], signal['ma170'], signal['ma453'])
-    min_ma = min(signal['ma34'], signal['ma170'], signal['ma453'])
-    if current_price > max_ma:
-        position = "价格在均线上方"
-        position_color = "green"
-    elif current_price < min_ma:
-        position_color = "red"
-    else:
-        position_color = "orange"
-    density_percent = signal['density_percent']
-    if density_percent < 0.1:
-        density_color = "purple"
-    elif density_percent < 0.2:
-        density_color = "blue"
-    else:
-        density_color = "darkblue"
-    cluster_price = min(signal['ma34'], signal['ma170'], signal['ma453'])
-    price_change = ((current_price - cluster_price) / cluster_price) * 100
-    price_change_color = "green" if price_change > 0 else "red"
-    price_change_arrow = "↑" if price_change > 0 else "↓"
-    symbol_simple = simplify_symbol(signal['symbol'])
-    symbol_link = generate_symbol_link(signal['symbol'])
-    content = (
-        f"<div style='margin-bottom: 10px; border-left: 4px solid {position_color}; padding-left: 8px;'>"
-        f"<a href='{symbol_link}' target='_blank' style='text-decoration: none; color: {position_color}; font-weight: bold;'>"
-        f"🔍 {symbol_simple} [{tf.upper()}] {position}</a> | "
-        f"密集度: <span style='color: {density_color}; font-weight: bold;'>{density_percent:.3f}%</span> | "
-        f"现价: {signal['current_price']:.4f} | "
-        f"涨跌幅: <span style='color: {price_change_color}; font-weight: bold;'>{price_change:.2f}% {price_change_arrow}</span> | "
-        f"MA34: {signal['ma34']:.4f} | MA170: {signal['ma170']:.4f} | MA453: {signal['ma453']:.4f} | 时间: {signal['detect_time'].strftime('%H:%M:%S')}"
-        f"</div>"
-    )
-    st.markdown(content, unsafe_allow_html=True)
+    try:
+        position = "价格在均线之间"
+        current_price = signal['current_price']
+        max_ma = max(signal['ma34'], signal['ma170'], signal['ma453'])
+        min_ma = min(signal['ma34'], signal['ma170'], signal['ma453'])
+        if current_price > max_ma:
+            position = "价格在均线上方"
+            position_color = "green"
+        elif current_price < min_ma:
+            position_color = "red"
+        else:
+            position_color = "orange"
+        density_percent = signal['density_percent']
+        if density_percent < 0.1:
+            density_color = "purple"
+        elif density_percent < 0.2:
+            density_color = "blue"
+        else:
+            density_color = "darkblue"
+        cluster_price = min(signal['ma34'], signal['ma170'], signal['ma453'])
+        price_change = ((current_price - cluster_price) / cluster_price) * 100
+        price_change_color = "green" if price_change > 0 else "red"
+        price_change_arrow = "↑" if price_change > 0 else "↓"
+        symbol_simple = simplify_symbol(signal['symbol'])
+        symbol_link = generate_symbol_link(signal['symbol'])
+        content = (
+            f"<div style='margin-bottom: 10px; border-left: 4px solid {position_color}; padding-left: 8px;'>"
+            f"<a href='{symbol_link}' target='_blank' style='text-decoration: none; color: {position_color}; font-weight: bold;'>"
+            f"🔍 {symbol_simple} [{tf.upper()}] {position}</a> | "
+            f"密集度: <span style='color: {density_color}; font-weight: bold;'>{density_percent:.3f}%</span> | "
+            f"现价: {signal['current_price']:.4f} | "
+            f"涨跌幅: <span style='color: {price_change_color}; font-weight: bold;'>{price_change:.2f}% {price_change_arrow}</span> | "
+            f"MA34: {signal['ma34']:.4f} | MA170: {signal['ma170']:.4f} | MA453: {signal['ma453']:.4f} | 时间: {signal['detect_time'].strftime('%H:%M:%S')}"
+            f"</div>"
+        )
+        st.markdown(content, unsafe_allow_html=True)
+    except Exception as e:
+        logging.error(f"渲染 cluster 信号失败: {e}")
 
 # ========== 双均线交叉 ==========
 def detect_cross_signals(data, timeframe, symbol):
     if data is None or len(data['closes']) < 513:
         return [], None
-    ma7, ma34, ma170, ma453 = data['ma7'], data['ma34'], data['ma170'], data['ma453']
-    closes, timestamps = data['closes'], data['timestamps']
-    current_price = float(closes[-1])
-    golden_cross_170_453 = (ma170 > ma453) & (np.roll(ma170, 1) <= np.roll(ma453, 1))
-    golden_cross_34_170 = (ma34 > ma170) & (np.roll(ma34, 1) <= np.roll(ma170, 1))
-    golden_cross_34_453 = (ma34 > ma453) & (np.roll(ma34, 1) <= np.roll(ma453, 1))
-    death_cross_170_453 = (ma170 < ma453) & (np.roll(ma170, 1) >= np.roll(ma453, 1))
-    death_cross_34_170 = (ma34 < ma170) & (np.roll(ma34, 1) >= np.roll(ma170, 1))
-    death_cross_34_453 = (ma34 < ma453) & (np.roll(ma34, 1) >= np.roll(ma453, 1))
-    golden_cross_7_34 = (ma7 > ma34) & (np.roll(ma7, 1) <= np.roll(ma34, 1))
-    death_cross_7_34 = (ma7 < ma34) & (np.roll(ma7, 1) >= np.roll(ma34, 1))
-    valid_signals = []
-    recent_indices = np.arange(len(closes))[-86:]
-    short_term_window = CONFIG['cross_short_term_window']
-    short_term_indices = np.arange(len(closes))[-short_term_window:]
-    cross_unique_window = CONFIG['cross_unique_window']
-    density_threshold = CONFIG['price_diff_threshold_pct_by_tf'][timeframe] / 100.0
-    short_term_signals = []
-    for idx in short_term_indices:
-        if golden_cross_7_34[idx]:
-            cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-            short_term_signals.append(('多头', cross_time, closes[idx]))
-        elif death_cross_7_34[idx]:
-            cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-            short_term_signals.append(('空头', cross_time, closes[idx]))
-    for idx in recent_indices:
-        try:
-            if golden_cross_170_453[idx]:
-                signal_type = 'MA170金叉MA453'
+    try:
+        ma7, ma34, ma170, ma453 = data['ma7'], data['ma34'], data['ma170'], data['ma453']
+        closes, timestamps = data['closes'], data['timestamps']
+        current_price = float(closes[-1])
+        golden_cross_170_453 = (ma170 > ma453) & (np.roll(ma170, 1) <= np.roll(ma453, 1))
+        golden_cross_34_170 = (ma34 > ma170) & (np.roll(ma34, 1) <= np.roll(ma170, 1))
+        golden_cross_34_453 = (ma34 > ma453) & (np.roll(ma34, 1) <= np.roll(ma453, 1))
+        death_cross_170_453 = (ma170 < ma453) & (np.roll(ma170, 1) >= np.roll(ma453, 1))
+        death_cross_34_170 = (ma34 < ma170) & (np.roll(ma34, 1) >= np.roll(ma170, 1))
+        death_cross_34_453 = (ma34 < ma453) & (np.roll(ma34, 1) >= np.roll(ma453, 1))
+        golden_cross_7_34 = (ma7 > ma34) & (np.roll(ma7, 1) <= np.roll(ma34, 1))
+        death_cross_7_34 = (ma7 < ma34) & (np.roll(ma7, 1) >= np.roll(ma34, 1))
+        valid_signals = []
+        recent_indices = np.arange(len(closes))[-86:]
+        short_term_window = CONFIG['cross_short_term_window']
+        short_term_indices = np.arange(len(closes))[-short_term_window:]
+        cross_unique_window = CONFIG['cross_unique_window']
+        density_threshold = CONFIG['price_diff_threshold_pct_by_tf'][timeframe] / 100.0
+        short_term_signals = []
+        for idx in short_term_indices:
+            if golden_cross_7_34[idx]:
                 cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-                cross_price = closes[idx]
-                if (np.sum(golden_cross_170_453[-cross_unique_window:]) == 1 and
-                        np.sum(death_cross_170_453[-cross_unique_window:]) == 0):
-                    for d, st_t, st_p in short_term_signals:
-                        if d == '多头' and st_t >= cross_time:
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
-                            density_ratio = (high_price - low_price) / low_price
-                            if density_ratio <= density_threshold:
-                                density_percent = density_ratio * 100
-                                valid_signals.append(('多头', signal_type, cross_time, cross_price,
-                                                      current_price, density_percent))
-                                break
-            elif golden_cross_34_170[idx]:
-                signal_type = 'MA34金叉MA170'
+                short_term_signals.append(('多头', cross_time, closes[idx]))
+            elif death_cross_7_34[idx]:
                 cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-                cross_price = closes[idx]
-                if (np.sum(golden_cross_34_170[-cross_unique_window:]) == 1 and
-                        np.sum(death_cross_34_170[-cross_unique_window:]) == 0):
-                    for d, st_t, st_p in short_term_signals:
-                        if d == '多头' and st_t >= cross_time:
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
-                            density_ratio = (high_price - low_price) / low_price
-                            if density_ratio <= density_threshold:
-                                density_percent = density_ratio * 100
-                                valid_signals.append(('多头', signal_type, cross_time, cross_price,
-                                                      current_price, density_percent))
-                                break
-            elif golden_cross_34_453[idx]:
-                signal_type = 'MA34金叉MA453'
-                cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-                cross_price = closes[idx]
-                if (np.sum(golden_cross_34_453[-cross_unique_window:]) == 1 and
-                        np.sum(death_cross_34_453[-cross_unique_window:]) == 0):
-                    for d, st_t, st_p in short_term_signals:
-                        if d == '多头' and st_t >= cross_time:
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
-                            density_ratio = (high_price - low_price) / low_price
-                            if density_ratio <= density_threshold:
-                                density_percent = density_ratio * 100
-                                valid_signals.append(('多头', signal_type, cross_time, cross_price,
-                                                      current_price, density_percent))
-                                break
-            elif death_cross_170_453[idx]:
-                signal_type = 'MA170死叉MA453'
-                cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-                cross_price = closes[idx]
-                if (np.sum(death_cross_170_453[-cross_unique_window:]) == 1 and
-                        np.sum(golden_cross_170_453[-cross_unique_window:]) == 0):
-                    for d, st_t, st_p in short_term_signals:
-                        if d == '空头' and st_t >= cross_time:
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
-                            density_ratio = (high_price - low_price) / low_price
-                            if density_ratio <= density_threshold:
-                                density_percent = density_ratio * 100
-                                valid_signals.append(('空头', signal_type, cross_time, cross_price,
-                                                      current_price, density_percent))
-                                break
-            elif death_cross_34_170[idx]:
-                signal_type = 'MA34死叉MA170'
-                cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-                cross_price = closes[idx]
-                if (np.sum(death_cross_34_170[-cross_unique_window:]) == 1 and
-                        np.sum(golden_cross_34_170[-cross_unique_window:]) == 0):
-                    for d, st_t, st_p in short_term_signals:
-                        if d == '空头' and st_t >= cross_time:
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
-                            density_ratio = (high_price - low_price) / low_price
-                            if density_ratio <= density_threshold:
-                                density_percent = density_ratio * 100
-                                valid_signals.append(('空头', signal_type, cross_time, cross_price,
-                                                      current_price, density_percent))
-                                break
-            elif death_cross_34_453[idx]:
-                signal_type = 'MA34死叉MA453'
-                cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
-                cross_price = closes[idx]
-                if (np.sum(death_cross_34_453[-cross_unique_window:]) == 1 and
-                        np.sum(golden_cross_34_453[-cross_unique_window:]) == 0):
-                    for d, st_t, st_p in short_term_signals:
-                        if d == '空头' and st_t >= cross_time:
-                            high_price = max(st_p, cross_price)
-                            low_price = min(st_p, cross_price)
-                            density_ratio = (high_price - low_price) / low_price
-                            if density_ratio <= density_threshold:
-                                density_percent = density_ratio * 100
-                                valid_signals.append(('空头', signal_type, cross_time, cross_price,
-                                                      current_price, density_percent))
-                                break
-        except Exception as e:
-            logging.error(f"处理交叉信号时出错: {e}")
-            continue
-    formatted_signals = []
-    for direction, signal_type, cross_time, cross_price, current_price, density_percent in valid_signals:
-        price_change = ((current_price - cross_price) / cross_price) * 100
-        formatted_signals.append({
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'direction': direction,
-            'signal_type': signal_type,
-            'cross_time': cross_time,
-            'cross_price': cross_price,
-            'current_price': current_price,
-            'price_change': price_change,
-            'density_percent': density_percent,
-            'detect_time': datetime.now(beijing_tz).strftime('%H:%M:%S')
-        })
-    return formatted_signals, current_price
+                short_term_signals.append(('空头', cross_time, closes[idx]))
+        for idx in recent_indices:
+            try:
+                if golden_cross_170_453[idx]:
+                    signal_type = 'MA170金叉MA453'
+                    cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
+                    cross_price = closes[idx]
+                    if (np.sum(golden_cross_170_453[-cross_unique_window:]) == 1 and
+                            np.sum(death_cross_170_453[-cross_unique_window:]) == 0):
+                        for d, st_t, st_p in short_term_signals:
+                            if d == '多头' and st_t >= cross_time:
+                                high_price = max(st_p, cross_price)
+                                low_price = min(st_p, cross_price)
+                                density_ratio = (high_price - low_price) / low_price
+                                if density_ratio <= density_threshold:
+                                    density_percent = density_ratio * 100
+                                    valid_signals.append(('多头', signal_type, cross_time, cross_price,
+                                                          current_price, density_percent))
+                                    break
+                elif golden_cross_34_170[idx]:
+                    signal_type = 'MA34金叉MA170'
+                    cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
+                    cross_price = closes[idx]
+                    if (np.sum(golden_cross_34_170[-cross_unique_window:]) == 1 and
+                            np.sum(death_cross_34_170[-cross_unique_window:]) == 0):
+                        for d, st_t, st_p in short_term_signals:
+                            if d == '多头' and st_t >= cross_time:
+                                high_price = max(st_p, cross_price)
+                                low_price = min(st_p, cross_price)
+                                density_ratio = (high_price - low_price) / low_price
+                                if density_ratio <= density_threshold:
+                                    density_percent = density_ratio * 100
+                                    valid_signals.append(('多头', signal_type, cross_time, cross_price,
+                                                          current_price, density_percent))
+                                    break
+                elif golden_cross_34_453[idx]:
+                    signal_type = 'MA34金叉MA453'
+                    cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
+                    cross_price = closes[idx]
+                    if (np.sum(golden_cross_34_453[-cross_unique_window:]) == 1 and
+                            np.sum(death_cross_34_453[-cross_unique_window:]) == 0):
+                        for d, st_t, st_p in short_term_signals:
+                            if d == '多头' and st_t >= cross_time:
+                                high_price = max(st_p, cross_price)
+                                low_price = min(st_p, cross_price)
+                                density_ratio = (high_price - low_price) / low_price
+                                if density_ratio <= density_threshold:
+                                    density_percent = density_ratio * 100
+                                    valid_signals.append(('多头', signal_type, cross_time, cross_price,
+                                                          current_price, density_percent))
+                                    break
+                elif death_cross_170_453[idx]:
+                    signal_type = 'MA170死叉MA453'
+                    cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
+                    cross_price = closes[idx]
+                    if (np.sum(death_cross_170_453[-cross_unique_window:]) == 1 and
+                            np.sum(golden_cross_170_453[-cross_unique_window:]) == 0):
+                        for d, st_t, st_p in short_term_signals:
+                            if d == '空头' and st_t >= cross_time:
+                                high_price = max(st_p, cross_price)
+                                low_price = min(st_p, cross_price)
+                                density_ratio = (high_price - low_price) / low_price
+                                if density_ratio <= density_threshold:
+                                    density_percent = density_ratio * 100
+                                    valid_signals.append(('空头', signal_type, cross_time, cross_price,
+                                                          current_price, density_percent))
+                                    break
+                elif death_cross_34_170[idx]:
+                    signal_type = 'MA34死叉MA170'
+                    cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
+                    cross_price = closes[idx]
+                    if (np.sum(death_cross_34_170[-cross_unique_window:]) == 1 and
+                            np.sum(golden_cross_34_170[-cross_unique_window:]) == 0):
+                        for d, st_t, st_p in short_term_signals:
+                            if d == '空头' and st_t >= cross_time:
+                                high_price = max(st_p, cross_price)
+                                low_price = min(st_p, cross_price)
+                                density_ratio = (high_price - low_price) / low_price
+                                if density_ratio <= density_threshold:
+                                    density_percent = density_ratio * 100
+                                    valid_signals.append(('空头', signal_type, cross_time, cross_price,
+                                                          current_price, density_percent))
+                                    break
+                elif death_cross_34_453[idx]:
+                    signal_type = 'MA34死叉MA453'
+                    cross_time = datetime.fromtimestamp(int(timestamps[idx]) / 1000, tz=beijing_tz)
+                    cross_price = closes[idx]
+                    if (np.sum(death_cross_34_453[-cross_unique_window:]) == 1 and
+                            np.sum(golden_cross_34_453[-cross_unique_window:]) == 0):
+                        for d, st_t, st_p in short_term_signals:
+                            if d == '空头' and st_t >= cross_time:
+                                high_price = max(st_p, cross_price)
+                                low_price = min(st_p, cross_price)
+                                density_ratio = (high_price - low_price) / low_price
+                                if density_ratio <= density_threshold:
+                                    density_percent = density_ratio * 100
+                                    valid_signals.append(('空头', signal_type, cross_time, cross_price,
+                                                          current_price, density_percent))
+                                    break
+            except Exception as e:
+                logging.error(f"处理交叉信号时出错: {e}")
+                continue
+        formatted_signals = []
+        for direction, signal_type, cross_time, cross_price, current_price, density_percent in valid_signals:
+            price_change = ((current_price - cross_price) / cross_price) * 100
+            formatted_signals.append({
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'direction': direction,
+                'signal_type': signal_type,
+                'cross_time': cross_time,
+                'cross_price': cross_price,
+                'current_price': current_price,
+                'price_change': price_change,
+                'density_percent': density_percent,
+                'detect_time': datetime.now(beijing_tz).strftime('%H:%M:%S')
+            })
+        return formatted_signals, current_price
+    except Exception as e:
+        logging.error(f"检测交叉信号失败: {e}")
+        return [], None
 
 def render_cross_signal(tf, signal):
-    direction, signal_type, cross_time, cross_price, current_price, price_change, density_percent = (
-        signal['direction'], signal['signal_type'], signal['cross_time'],
-        signal['cross_price'], signal['current_price'], signal['price_change'], signal['density_percent']
-    )
-    direction_color = "green" if direction == '多头' else "red"
-    signal_icon = "⏳"
-    price_change_color = "green" if price_change > 0 else "red"
-    price_change_arrow = "↑" if price_change > 0 else "↓"
-    if density_percent < 0.1:
-        density_color = "purple"
-    elif density_percent < 0.2:
-        density_color = "blue"
-    else:
-        density_color = "darkblue"
-    symbol_simple = simplify_symbol(signal['symbol'])
-    symbol_link = generate_symbol_link(signal['symbol'])
-    content = (
-        f"<div style='margin-bottom: 10px; border-left: 4px solid {direction_color}; padding-left: 8px;'>"
-        f"<a href='{symbol_link}' target='_blank' style='text-decoration: none; color: {direction_color}; font-weight: bold;'>"
-        f"{signal_icon} {symbol_simple} [{tf.upper()}] {direction}</a> | "
-        f"{signal_type} | 交叉价: {cross_price:.4f} | 现价: {current_price:.4f} | "
-        f"<span style='color: {price_change_color};'>涨跌幅: {price_change:.2f}% {price_change_arrow}</span> | "
-        f"密集度: <span style='color: {density_color}; font-weight: bold;'>{density_percent:.3f}%</span> | "
-        f"时间: {cross_time.strftime('%H:%M:%S')} | 检测: {signal['detect_time']}"
-        f"</div>"
-    )
-    st.markdown(content, unsafe_allow_html=True)
+    try:
+        direction, signal_type, cross_time, cross_price, current_price, price_change, density_percent = (
+            signal['direction'], signal['signal_type'], signal['cross_time'],
+            signal['cross_price'], signal['current_price'], signal['price_change'], signal['density_percent']
+        )
+        direction_color = "green" if direction == '多头' else "red"
+        signal_icon = "⏳"
+        price_change_color = "green" if price_change > 0 else "red"
+        price_change_arrow = "↑" if price_change > 0 else "↓"
+        if density_percent < 0.1:
+            density_color = "purple"
+        elif density_percent < 0.2:
+            density_color = "blue"
+        else:
+            density_color = "darkblue"
+        symbol_simple = simplify_symbol(signal['symbol'])
+        symbol_link = generate_symbol_link(signal['symbol'])
+        content = (
+            f"<div style='margin-bottom: 10px; border-left: 4px solid {direction_color}; padding-left: 8px;'>"
+            f"<a href='{symbol_link}' target='_blank' style='text-decoration: none; color: {direction_color}; font-weight: bold;'>"
+            f"{signal_icon} {symbol_simple} [{tf.upper()}] {direction}</a> | "
+            f"{signal_type} | 交叉价: {cross_price:.4f} | 现价: {current_price:.4f} | "
+            f"<span style='color: {price_change_color};'>涨跌幅: {price_change:.2f}% {price_change_arrow}</span> | "
+            f"密集度: <span style='color: {density_color}; font-weight: bold;'>{density_percent:.3f}%</span> | "
+            f"时间: {cross_time.strftime('%H:%M:%S')} | 检测: {signal['detect_time']}"
+            f"</div>"
+        )
+        st.markdown(content, unsafe_allow_html=True)
+    except Exception as e:
+        logging.error(f"渲染 cross 信号失败: {e}")
 
 # ========== 右侧固定展示栏 ==========
 def _normalize_detect_dt(val):
-    if isinstance(val, datetime):
-        return val if val.tzinfo else val.replace(tzinfo=beijing_tz)
-    if isinstance(val, str):
-        try:
+    try:
+        if isinstance(val, datetime):
+            return val if val.tzinfo else val.replace(tzinfo=beijing_tz)
+        if isinstance(val, str):
             h, m, s = map(int, val.split(':'))
             now = datetime.now(beijing_tz)
             return datetime(now.year, now.month, now.day, h, m, s, tzinfo=beijing_tz)
-        except:
-            return datetime.now(beijing_tz)
-    return datetime.now(beijing_tz)
+        return datetime.now(beijing_tz)
+    except Exception as e:
+        logging.error(f"规范化时间失败: {e}")
+        return datetime.now(beijing_tz)
 
 def clean_signal_data(signal):
-    for key in ['current_price', 'ma34', 'ma170', 'ma453', 'density_percent', 'price_change']:
-        if key in signal:
+    try:
+        for key in ['current_price', 'ma34', 'ma170', 'ma453', 'density_percent', 'price_change']:
+            if key in signal:
+                try:
+                    signal[key] = float(signal[key])
+                except (TypeError, ValueError):
+                    signal[key] = 0.0
+        if 'detect_time' in signal:
+            signal['detect_time'] = _normalize_detect_dt(signal['detect_time'])
+        if 'cross_time' in signal and isinstance(signal['cross_time'], str):
             try:
-                signal[key] = float(signal[key])
-            except (TypeError, ValueError):
-                signal[key] = 0.0
-    if 'detect_time' in signal:
-        signal['detect_time'] = _normalize_detect_dt(signal['detect_time'])
-    if 'cross_time' in signal and isinstance(signal['cross_time'], str):
-        try:
-            signal['cross_time'] = datetime.fromisoformat(signal['cross_time'])
-        except:
-            signal['cross_time'] = datetime.now(beijing_tz)
-    return signal
+                signal['cross_time'] = datetime.fromisoformat(signal['cross_time'])
+            except:
+                signal['cross_time'] = datetime.now(beijing_tz)
+        return signal
+    except Exception as e:
+        logging.error(f"清理信号数据失败: {e}")
+        return signal
 
 def _enqueue_latest(signal, tf, strategy, symbol, signal_id):
-    if signal_id in st.session_state.ticker_seen:
-        return
-    st.session_state.ticker_seen.add(signal_id)
-    entry = {
-        'id': signal_id,
-        'symbol': symbol,
-        'timeframe': tf,
-        'strategy': strategy,
-        'detect_dt': _normalize_detect_dt(signal.get('detect_time')),
-        'current_price': signal.get('current_price'),
-        'signal_type': signal.get('signal_type'),
-        'direction': signal.get('direction'),
-        'cross_time': signal.get('cross_time'),
-        'ma34': signal.get('ma34'),
-        'ma170': signal.get('ma170'),
-        'ma453': signal.get('ma453'),
-        'density_percent': signal.get('density_percent'),
-        'price_change': signal.get('price_change')
-    }
-    entry = clean_signal_data(entry)
-    st.session_state.latest_signals_ticker.appendleft(entry)
-    logging.info(f"加入右侧栏队列: {symbol} {tf} {strategy}")
+    try:
+        if signal_id in st.session_state.ticker_seen:
+            return
+        st.session_state.ticker_seen.add(signal_id)
+        entry = {
+            'id': signal_id,
+            'symbol': symbol,
+            'timeframe': tf,
+            'strategy': strategy,
+            'detect_dt': _normalize_detect_dt(signal.get('detect_time')),
+            'current_price': signal.get('current_price'),
+            'signal_type': signal.get('signal_type'),
+            'direction': signal.get('direction'),
+            'cross_time': signal.get('cross_time'),
+            'ma34': signal.get('ma34'),
+            'ma170': signal.get('ma170'),
+            'ma453': signal.get('ma453'),
+            'density_percent': signal.get('density_percent'),
+            'price_change': signal.get('price_change')
+        }
+        entry = clean_signal_data(entry)
+        st.session_state.latest_signals_ticker.appendleft(entry)
+        logging.info(f"加入右侧栏队列: {symbol} {tf} {strategy}")
+    except Exception as e:
+        logging.error(f"加入右侧栏队列失败: {e}")
 
 def render_right_sidebar():
     try:
@@ -719,7 +761,7 @@ def render_right_sidebar():
                     )
                     lines.append(line)
             except Exception as e:
-                logging.error(f"渲染右侧栏条目失败: {str(e)}")
+                logging.error(f"渲染右侧栏条目失败: {e}")
                 continue
         html = (
             "<div id='latest-fixed-panel'>"
@@ -730,65 +772,73 @@ def render_right_sidebar():
         )
         st.session_state.right_panel_placeholder.markdown(html, unsafe_allow_html=True)
     except Exception as e:
-        logging.error(f"渲染右侧栏失败: {str(e)}")
+        logging.error(f"渲染右侧栏失败: {e}")
         st.session_state.right_panel_placeholder = None
         st.session_state.right_panel_css_injected = False
         st.experimental_rerun()
 
 # ========== UI：标签页 ==========
 def build_tabs():
-    st.markdown(
-        """
-        <style>
-        .stTabs > div > div:first-child {
-            position: fixed;
-            bottom: 0;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            background-color: var(--default-background-color);
-            padding: 8px 16px;
-            border-radius: 8px;
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: center;
-            gap: 10px;
-        }
-        .stTabs > div > div:last-child {
-            margin-bottom: 60px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-    labels = []
-    keys = []
-    for tf in TIMEFRAMES:
-        for sk, sn in STRATEGIES.items():
-            labels.append(f"{tf.upper()}·{sn}")
-            keys.append((tf, sk))
-    tabs = st.tabs(labels)
-    for i, k in enumerate(keys):
-        with tabs[i]:
-            container = st.container()
-            placeholder = st.empty()
-            st.session_state.result_containers[k] = {'container': container, 'placeholder': placeholder}
+    try:
+        st.markdown(
+            """
+            <style>
+            .stTabs > div > div:first-child {
+                position: fixed;
+                bottom: 0;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 1000;
+                background-color: var(--default-background-color);
+                padding: 8px 16px;
+                border-radius: 8px;
+                box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+                display: flex;
+                justify-content: center;
+                gap: 10px;
+            }
+            .stTabs > div > div:last-child {
+                margin-bottom: 60px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        labels = []
+        keys = []
+        for tf in TIMEFRAMES:
+            for sk, sn in STRATEGIES.items():
+                labels.append(f"{tf.upper()}·{sn}")
+                keys.append((tf, sk))
+        tabs = st.tabs(labels)
+        for i, k in enumerate(keys):
+            with tabs[i]:
+                container = st.container()
+                placeholder = st.empty()
+                st.session_state.result_containers[k] = {'container': container, 'placeholder': placeholder}
+    except Exception as e:
+        logging.error(f"构建标签页失败: {e}")
+        st.error(f"构建标签页失败: {e}")
 
 def update_tab_content(tf, strategy):
-    container = st.session_state.result_containers[(tf, strategy)]['container']
-    placeholder = st.session_state.result_containers[(tf, strategy)]['placeholder']
-    with container:
-        placeholder.empty()
-        signals = st.session_state.valid_signals.get((tf, strategy), [])
-        if not signals:
-            placeholder.markdown("暂无信号")
-            return
-        placeholder.markdown(f"**{tf.upper()} {STRATEGIES[strategy]}信号: {len(signals)}个**")
-        for s in signals[-868:][::-1]:
-            if strategy == 'cluster':
-                render_cluster_signal(tf, s)
-            else:
-                render_cross_signal(tf, s)
+    try:
+        container = st.session_state.result_containers[(tf, strategy)]['container']
+        placeholder = st.session_state.result_containers[(tf, strategy)]['placeholder']
+        with container:
+            placeholder.empty()
+            signals = st.session_state.valid_signals.get((tf, strategy), [])
+            if not signals:
+                placeholder.markdown("暂无信号")
+                return
+            placeholder.markdown(f"**{tf.upper()} {STRATEGIES[strategy]}信号: {len(signals)}个**")
+            for s in signals[-868:][::-1]:
+                if strategy == 'cluster':
+                    render_cluster_signal(tf, s)
+                else:
+                    render_cross_signal(tf, s)
+    except Exception as e:
+        logging.error(f"更新标签页内容失败 ({tf}, {strategy}): {e}")
+        st.error(f"更新标签页内容失败: {e}")
 
 # ========== 处理与监控 ==========
 def process_symbol_timeframe(exchange, symbol, timeframe, failed_symbols):
@@ -813,185 +863,197 @@ def process_symbol_timeframe(exchange, symbol, timeframe, failed_symbols):
         return symbol, out_cluster, out_cross
 
 def monitor_symbols(api_key, api_secret):
-    exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 30000})
-    build_tabs()
-    render_right_sidebar()
-    st.sidebar.markdown("---")
-    st.sidebar.subheader(f"待监控交易对（按成交量前{CONFIG['top_n_symbols']}）")
-    if not st.session_state.symbols_to_monitor:
-        st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
-    cols = st.sidebar.columns(4)
-    syms = st.session_state.symbols_to_monitor
-    per_col = max(1, len(syms) // 4)
-    for i, c in enumerate(cols):
-        start = i * per_col
-        end = start + per_col
-        if i == len(cols) - 1: end = len(syms)
-        with c:
-            for s in syms[start:end]:
-                color = 'red' if s in st.session_state.failed_symbols else 'green'
-                simple_s = simplify_symbol(s)
-                st.markdown(f"<span style='color:{color};'>• {simple_s}</span>", unsafe_allow_html=True)
-    progress_bar = st.sidebar.progress(0)
-    status_text = st.sidebar.empty()
-    stats = st.sidebar.empty()
-    max_workers = CONFIG.get('max_workers', 4)
-    last_cleanup_time = time.time()
-
-    while st.session_state.monitoring_active:
-        try:
-            start_time = time.time()
-            st.session_state.detection_round += 1
-            new_signals = defaultdict(int)
-            symbols = [s for s in st.session_state.symbols_to_monitor if s not in st.session_state.failed_symbols]
-            if not symbols:
-                time.sleep(30)
-                continue
-            failed_copy = st.session_state.failed_symbols.copy()
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for s in symbols:
-                    for tf in TIMEFRAMES:
-                        futures.append(executor.submit(process_symbol_timeframe, exchange, s, tf, failed_copy))
-                for i, fut in enumerate(as_completed(futures)):
-                    progress = (i + 1) / len(futures)
-                    progress_bar.progress(progress)
-                    status_text.text(f"检测进度: {progress * 100:.1f}%")
-                    symbol, cluster_signals, cross_signals = fut.result()
-                    for sig in cluster_signals:
-                        tf = sig['timeframe']
-                        signal_id = generate_signal_id_cluster(sig['symbol'], tf, sig['detect_time'])
-                        if signal_id not in st.session_state.shown_signals[(tf, 'cluster')]:
-                            st.session_state.valid_signals[(tf, 'cluster')].append(sig)
-                            st.session_state.shown_signals[(tf, 'cluster')].add(signal_id)
-                            new_signals[(tf, 'cluster')] += 1
-                            update_tab_content(tf, 'cluster')
-                            _enqueue_latest(sig, tf, 'cluster', symbol, signal_id)
-                            save_signal_to_db(signal_id, symbol, tf, 'cluster', sig)
-                    for sig in cross_signals:
-                        tf = sig['timeframe']
-                        cross_time = sig['cross_time']
-                        signal_id = generate_signal_id_cross(sig['symbol'], tf, cross_time, sig['signal_type'])
-                        key = (symbol, tf, 'cross')
-                        last_time = st.session_state.last_signal_times.get(key)
-                        interval = TIMEFRAMES[tf]['interval'] * CONFIG.get('cross_cooldown_multiplier', 5)
-                        if not (last_time and (cross_time - last_time).total_seconds() < interval) and \
-                                signal_id not in st.session_state.shown_signals[(tf, 'cross')]:
-                            st.session_state.valid_signals[(tf, 'cross')].append(sig)
-                            st.session_state.shown_signals[(tf, 'cross')].add(signal_id)
-                            st.session_state.last_signal_times[key] = cross_time
-                            new_signals[(tf, 'cross')] += 1
-                            update_tab_content(tf, 'cross')
-                            _enqueue_latest(sig, tf, 'cross', symbol, signal_id)
-                            save_signal_to_db(signal_id, symbol, tf, 'cross', sig)
-                    render_right_sidebar()
-            stats.markdown(
-                f"轮次: {st.session_state.detection_round} | 新信号: {dict(new_signals)} | 失败交易对: {len(st.session_state.failed_symbols)}")
-            # 每小时清理一次旧信号
-            if time.time() - last_cleanup_time > 3600:
-                clean_old_signals(max_age_hours=24)
-                last_cleanup_time = time.time()
-            # 发送心跳请求以防止休眠
+    try:
+        exchange = ccxt.gateio({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True, 'timeout': 30000})
+        build_tabs()
+        render_right_sidebar()
+        st.sidebar.markdown("---")
+        st.sidebar.subheader(f"待监控交易对（按成交量前{CONFIG['top_n_symbols']}）")
+        if not st.session_state.symbols_to_monitor:
+            st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
+        cols = st.sidebar.columns(4)
+        syms = st.session_state.symbols_to_monitor
+        per_col = max(1, len(syms) // 4)
+        for i, c in enumerate(cols):
+            start = i * per_col
+            end = start + per_col
+            if i == len(cols) - 1: end = len(syms)
+            with c:
+                for s in syms[start:end]:
+                    color = 'red' if s in st.session_state.failed_symbols else 'green'
+                    simple_s = simplify_symbol(s)
+                    st.markdown(f"<span style='color:{color};'>• {simple_s}</span>", unsafe_allow_html=True)
+        progress_bar = st.sidebar.progress(0)
+        status_text = st.sidebar.empty()
+        stats = st.sidebar.empty()
+        max_workers = CONFIG.get('max_workers', 2)
+        last_cleanup_time = time.time()
+        while st.session_state.monitoring_active:
             try:
-                requests.get(CONFIG['heartbeat_url'], timeout=5)
-                logging.info("发送心跳请求以保持应用活跃")
+                start_time = time.time()
+                st.session_state.detection_round += 1
+                new_signals = defaultdict(int)
+                symbols = [s for s in st.session_state.symbols_to_monitor if s not in st.session_state.failed_symbols]
+                if not symbols:
+                    logging.info("无有效交易对，等待 30 秒")
+                    time.sleep(30)
+                    continue
+                failed_copy = st.session_state.failed_symbols.copy()
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = []
+                    for s in symbols:
+                        for tf in TIMEFRAMES:
+                            futures.append(executor.submit(process_symbol_timeframe, exchange, s, tf, failed_copy))
+                    for i, fut in enumerate(as_completed(futures)):
+                        progress = (i + 1) / len(futures)
+                        progress_bar.progress(progress)
+                        status_text.text(f"检测进度: {progress * 100:.1f}%")
+                        try:
+                            symbol, cluster_signals, cross_signals = fut.result()
+                            for sig in cluster_signals:
+                                tf = sig['timeframe']
+                                signal_id = generate_signal_id_cluster(sig['symbol'], tf, sig['detect_time'])
+                                if signal_id not in st.session_state.shown_signals[(tf, 'cluster')]:
+                                    st.session_state.valid_signals[(tf, 'cluster')].append(sig)
+                                    st.session_state.shown_signals[(tf, 'cluster')].add(signal_id)
+                                    new_signals[(tf, 'cluster')] += 1
+                                    update_tab_content(tf, 'cluster')
+                                    _enqueue_latest(sig, tf, 'cluster', symbol, signal_id)
+                                    save_signal_to_db(signal_id, symbol, tf, 'cluster', sig)
+                            for sig in cross_signals:
+                                tf = sig['timeframe']
+                                cross_time = sig['cross_time']
+                                signal_id = generate_signal_id_cross(sig['symbol'], tf, cross_time, sig['signal_type'])
+                                key = (symbol, tf, 'cross')
+                                last_time = st.session_state.last_signal_times.get(key)
+                                interval = TIMEFRAMES[tf]['interval'] * CONFIG.get('cross_cooldown_multiplier', 5)
+                                if not (last_time and (cross_time - last_time).total_seconds() < interval) and \
+                                        signal_id not in st.session_state.shown_signals[(tf, 'cross')]:
+                                    st.session_state.valid_signals[(tf, 'cross')].append(sig)
+                                    st.session_state.shown_signals[(tf, 'cross')].add(signal_id)
+                                    st.session_state.last_signal_times[key] = cross_time
+                                    new_signals[(tf, 'cross')] += 1
+                                    update_tab_content(tf, 'cross')
+                                    _enqueue_latest(sig, tf, 'cross', symbol, signal_id)
+                                    save_signal_to_db(signal_id, symbol, tf, 'cross', sig)
+                            render_right_sidebar()
+                        except Exception as e:
+                            logging.error(f"处理 future 结果失败: {e}")
+                stats.markdown(
+                    f"轮次: {st.session_state.detection_round} | 新信号: {dict(new_signals)} | 失败交易对: {len(st.session_state.failed_symbols)}")
+                if time.time() - last_cleanup_time > 3600:
+                    clean_old_signals(max_age_hours=24)
+                    last_cleanup_time = time.time()
+                elapsed = time.time() - start_time
+                sleep_time = max(45 - elapsed, 30)
+                time.sleep(sleep_time)
             except Exception as e:
-                logging.warning(f"心跳请求失败: {e}")
-            elapsed = time.time() - start_time
-            sleep_time = max(45 - elapsed, 30)
-            time.sleep(sleep_time)
-        except Exception as e:
-            logging.error(f"监控循环异常: {e}")
-            time.sleep(10)
-            continue
+                logging.error(f"监控循环异常: {e}")
+                st.error(f"监控循环异常: {e}")
+                time.sleep(10)
+                continue
+    except Exception as e:
+        logging.error(f"monitor_symbols 失败: {e}")
+        st.error(f"监控启动失败: {e}")
 
 def start_monitoring(api_key, api_secret):
-    if st.session_state.monitoring_thread is None or not st.session_state.monitoring_thread.is_alive():
-        st.session_state.monitoring_active = True
-        st.session_state.monitoring_thread = threading.Thread(
-            target=monitor_symbols, args=(api_key, api_secret), daemon=True
-        )
-        st.session_state.monitoring_thread.start()
-        st.sidebar.success("监控已启动")
+    try:
+        if st.session_state.monitoring_thread is None or not st.session_state.monitoring_thread.is_alive():
+            st.session_state.monitoring_active = True
+            st.session_state.monitoring_thread = threading.Thread(
+                target=monitor_symbols, args=(api_key, api_secret), daemon=True
+            )
+            st.session_state.monitoring_thread.start()
+            st.sidebar.success("监控已启动")
+    except Exception as e:
+        logging.error(f"启动监控失败: {e}")
+        st.error(f"启动监控失败: {e}")
 
 def stop_monitoring():
-    st.session_state.monitoring_active = False
-    if st.session_state.monitoring_thread and st.session_state.monitoring_thread.is_alive():
-        st.session_state.monitoring_thread.join(timeout=5)
-    st.sidebar.info("监控已停止")
+    try:
+        st.session_state.monitoring_active = False
+        if st.session_state.monitoring_thread and st.session_state.monitoring_thread.is_alive():
+            st.session_state.monitoring_thread.join(timeout=5)
+        st.sidebar.info("监控已停止")
+    except Exception as e:
+        logging.error(f"停止监控失败: {e}")
+        st.error(f"停止监控失败: {e}")
 
 # ========== 入口：侧栏参数 ==========
 def main():
-    init_db()
-    load_signals_from_db()
-    st.title('一体化监控（v2） - 三均线密集 & 双均线交叉（1m/5m/30m/4h）')
-    st.sidebar.header('运行参数（可调整）')
-    st.sidebar.subheader('三均线密集阈值配置（%）')
-    CONFIG['density_threshold_pct_by_tf']['1m'] = st.sidebar.number_input(
-        '1m级别', min_value=0.01, max_value=5.0, value=0.13, step=0.01, key='density_1m')
-    CONFIG['density_threshold_pct_by_tf']['5m'] = st.sidebar.number_input(
-        '5m级别', min_value=0.01, max_value=5.0, value=0.3, step=0.01, key='density_5m')
-    CONFIG['density_threshold_pct_by_tf']['30m'] = st.sidebar.number_input(
-        '30m级别', min_value=0.01, max_value=5.0, value=1.0, step=0.01, key='density_30m')
-    CONFIG['density_threshold_pct_by_tf']['4h'] = st.sidebar.number_input(
-        '4h级别', min_value=0.01, max_value=5.0, value=3.0, step=0.01, key='density_4h')
-    st.sidebar.subheader('长短交叉点密集度阈值（%）')
-    CONFIG['price_diff_threshold_pct_by_tf']['1m'] = st.sidebar.number_input(
-        '1m级别密集度阈值', min_value=0.01, max_value=5.0, value=0.86, step=0.01, key='price_diff_1m')
-    CONFIG['price_diff_threshold_pct_by_tf']['5m'] = st.sidebar.number_input(
-        '5m级别密集度阈值', min_value=0.01, max_value=5.0, value=1.86, step=0.01, key='price_diff_5m')
-    CONFIG['price_diff_threshold_pct_by_tf']['30m'] = st.sidebar.number_input(
-        '30m级别密集度阈值', min_value=0.01, max_value=5.0, value=3.86, step=0.01, key='price_diff_30m')
-    CONFIG['price_diff_threshold_pct_by_tf']['4h'] = st.sidebar.number_input(
-        '4h级别密集度阈值', min_value=0.01, max_value=5.0, value=4.86, step=0.01, key='price_diff_4h')
-    st.sidebar.subheader('其他参数')
-    CONFIG['cluster_recent_bars'] = st.sidebar.number_input(
-        '密集判定最近K线数 (X)', min_value=3, max_value=100, value=13, step=1)
-    CONFIG['cluster_check_window'] = st.sidebar.number_input(
-        '密集检查窗口 (Y)', min_value=10, max_value=200, value=86, step=1)
-    CONFIG['cross_unique_window'] = st.sidebar.number_input(
-        '均线交叉密度（唯一性窗口）', min_value=10, max_value=1000, value=513, step=1)
-    CONFIG['cross_short_term_window'] = st.sidebar.number_input(
-        '短期确认信号窗口', min_value=1, max_value=10, value=3, step=1,
-        help="最近多少根K线内有MA7/MA34同向交叉（默认3根）")
-    CONFIG['cross_cooldown_multiplier'] = st.sidebar.number_input(
-        '双均线交叉冷却倍数 (interval * X)', min_value=1, max_value=20, value=5, step=1)
-    CONFIG['fetch_limit'] = st.sidebar.number_input(
-        '拉取K线数量 (fetch limit)', min_value=600, max_value=2000, value=968, step=1)
-    CONFIG['max_workers'] = st.sidebar.number_input(
-        '并发线程数', min_value=1, max_value=12, value=4, step=1)
-    CONFIG['top_n_symbols'] = st.sidebar.selectbox(
-        '按交易额获取交易对数量', [50, 100, 150, 200, 300], index=4)
-    for tf in TIMEFRAMES:
-        TIMEFRAMES[tf]['max_bars'] = int(CONFIG['fetch_limit'])
-        TIMEFRAMES[tf]['cache_ttl'] = 30 if tf == '1m' else (180 if tf == '5m' else 600)
-    st.sidebar.markdown('---')
-    st.sidebar.subheader('API & 控制')
-    api_key = st.sidebar.text_input('Gate.io API Key', value=API_KEY)
-    api_secret = st.sidebar.text_input('Gate.io API Secret', value=API_SECRET, type='password')
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        start_btn = st.button('开始监控')
-    with col2:
-        stop_btn = st.button('停止监控')
-    if start_btn:
-        if not api_key or not api_secret:
-            st.sidebar.error('请填写 API Key/Secret')
-            return
-        st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
-        start_monitoring(api_key, api_secret)
-    if stop_btn:
-        stop_monitoring()
-    st.sidebar.markdown(
-        '提示：三均线密集的判定为：在最近 X 根K线内发生，且在最近 Y 根内唯一，从而排除反复窄幅盘整的噪声。')
-    with st.expander('筛选规则说明（简要）', expanded=False):
-        st.markdown('''- 三均线密集：MA34/MA170/MA453 在某一根 K 线处最大最小差 <= 密集阈值，且该密集发生位置满足：
-                    1) 出现在最近 X 根 K 线内（X 可调，默认为 13）
-                    2) 在最近 Y 根 K 线内（Y 可调，默认为 86）恰好只有一次密集发生 —— 用来排除反复盘整造成的噪声
-                    - 双均线交叉：沿用原 513.py 的双均线组合 + MA7 与 MA34 的短期确认
-                    - 冷却：三均线密集 -> 每一次具体发生的信号只展示一次（使用发生时点唯一ID）；双均线交叉 -> interval * 冷却倍数秒内不重复''')
-    st.info('配置完成后点击侧栏的【开始监控】按钮以启动检测。')
+    try:
+        init_db()
+        load_signals_from_db()
+        st.title('一体化监控（v2） - 三均线密集 & 双均线交叉（1m/5m/30m/4h）')
+        st.sidebar.header('运行参数（可调整）')
+        st.sidebar.subheader('三均线密集阈值配置（%）')
+        CONFIG['density_threshold_pct_by_tf']['1m'] = st.sidebar.number_input(
+            '1m级别', min_value=0.01, max_value=5.0, value=0.13, step=0.01, key='density_1m')
+        CONFIG['density_threshold_pct_by_tf']['5m'] = st.sidebar.number_input(
+            '5m级别', min_value=0.01, max_value=5.0, value=0.3, step=0.01, key='density_5m')
+        CONFIG['density_threshold_pct_by_tf']['30m'] = st.sidebar.number_input(
+            '30m级别', min_value=0.01, max_value=5.0, value=1.0, step=0.01, key='density_30m')
+        CONFIG['density_threshold_pct_by_tf']['4h'] = st.sidebar.number_input(
+            '4h级别', min_value=0.01, max_value=5.0, value=3.0, step=0.01, key='density_4h')
+        st.sidebar.subheader('长短交叉点密集度阈值（%）')
+        CONFIG['price_diff_threshold_pct_by_tf']['1m'] = st.sidebar.number_input(
+            '1m级别密集度阈值', min_value=0.01, max_value=5.0, value=0.86, step=0.01, key='price_diff_1m')
+        CONFIG['price_diff_threshold_pct_by_tf']['5m'] = st.sidebar.number_input(
+            '5m级别密集度阈值', min_value=0.01, max_value=5.0, value=1.86, step=0.01, key='price_diff_5m')
+        CONFIG['price_diff_threshold_pct_by_tf']['30m'] = st.sidebar.number_input(
+            '30m级别密集度阈值', min_value=0.01, max_value=5.0, value=3.86, step=0.01, key='price_diff_30m')
+        CONFIG['price_diff_threshold_pct_by_tf']['4h'] = st.sidebar.number_input(
+            '4h级别密集度阈值', min_value=0.01, max_value=5.0, value=4.86, step=0.01, key='price_diff_4h')
+        st.sidebar.subheader('其他参数')
+        CONFIG['cluster_recent_bars'] = st.sidebar.number_input(
+            '密集判定最近K线数 (X)', min_value=3, max_value=100, value=13, step=1)
+        CONFIG['cluster_check_window'] = st.sidebar.number_input(
+            '密集检查窗口 (Y)', min_value=10, max_value=200, value=86, step=1)
+        CONFIG['cross_unique_window'] = st.sidebar.number_input(
+            '均线交叉密度（唯一性窗口）', min_value=10, max_value=1000, value=513, step=1)
+        CONFIG['cross_short_term_window'] = st.sidebar.number_input(
+            '短期确认信号窗口', min_value=1, max_value=10, value=3, step=1,
+            help="最近多少根K线内有MA7/MA34同向交叉（默认3根）")
+        CONFIG['cross_cooldown_multiplier'] = st.sidebar.number_input(
+            '双均线交叉冷却倍数 (interval * X)', min_value=1, max_value=20, value=5, step=1)
+        CONFIG['fetch_limit'] = st.sidebar.number_input(
+            '拉取K线数量 (fetch limit)', min_value=600, max_value=2000, value=968, step=1)
+        CONFIG['max_workers'] = st.sidebar.number_input(
+            '并发线程数', min_value=1, max_value=12, value=2, step=1)
+        CONFIG['top_n_symbols'] = st.sidebar.selectbox(
+            '按交易额获取交易对数量', [50, 100, 150, 200, 300], index=4)
+        for tf in TIMEFRAMES:
+            TIMEFRAMES[tf]['max_bars'] = int(CONFIG['fetch_limit'])
+            TIMEFRAMES[tf]['cache_ttl'] = 30 if tf == '1m' else (180 if tf == '5m' else 600)
+        st.sidebar.markdown('---')
+        st.sidebar.subheader('API & 控制')
+        api_key = st.sidebar.text_input('Gate.io API Key', value=API_KEY)
+        api_secret = st.sidebar.text_input('Gate.io API Secret', value=API_SECRET, type='password')
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            start_btn = st.button('开始监控')
+        with col2:
+            stop_btn = st.button('停止监控')
+        if start_btn:
+            if not api_key or not api_secret or api_key == "YOUR_API_KEY" or api_secret == "YOUR_API_SECRET":
+                st.sidebar.error('请填写有效的 Gate.io API Key 和 Secret')
+                return
+            st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
+            start_monitoring(api_key, api_secret)
+        if stop_btn:
+            stop_monitoring()
+        st.sidebar.markdown(
+            '提示：三均线密集的判定为：在最近 X 根K线内发生，且在最近 Y 根内唯一，从而排除反复窄幅盘整的噪声。')
+        with st.expander('筛选规则说明（简要）', expanded=False):
+            st.markdown('''- 三均线密集：MA34/MA170/MA453 在某一根 K 线处最大最小差 <= 密集阈值，且该密集发生位置满足：
+                        1) 出现在最近 X 根 K 线内（X 可调，默认为 13）
+                        2) 在最近 Y 根 K 线内（Y 可调，默认为 86）恰好只有一次密集发生 —— 用来排除反复盘整造成的噪声
+                        - 双均线交叉：沿用原 513.py 的双均线组合 + MA7 与 MA34 的短期确认
+                        - 冷却：三均线密集 -> 每一次具体发生的信号只展示一次（使用发生时点唯一ID）；双均线交叉 -> interval * 冷却倍数秒内不重复''')
+        st.info('配置完成后点击侧栏的【开始监控】按钮以启动检测。')
+    except Exception as e:
+        logging.error(f"main 函数异常: {e}")
+        st.error(f"应用启动失败: {e}")
 
 if __name__ == '__main__':
     main()
-
