@@ -73,6 +73,8 @@ if 'monitoring_thread' not in st.session_state:
     st.session_state.monitoring_thread = None
 if 'monitoring_active' not in st.session_state:
     st.session_state.monitoring_active = False
+if 'last_update_time' not in st.session_state:
+    st.session_state.last_update_time = 0
 
 # 新增：右侧固定栏所需的会话状态
 if 'latest_signals_ticker' not in st.session_state:
@@ -750,7 +752,7 @@ def render_right_sidebar():
 
                     line = (
                         f"<div class='item' style='border-left-color:{edge_color};'>"
-                        f"<a href='{symbol_link}' target='_blank' style='color:{edge_color};font-weight:600;'>⏳ {symbol_simple} [{tf.upper()}] {direction}</a> "
+                        f"<a href='{symbol_link}' target='_blank' style='color:{edge_color};font-weight:600;'>⏳ {symbol_simple} [{tf.upper()}] {direction</a> "
                         f"{s.get('signal_type', '')} | 现价 {escape_html(f'{s["current_price"]:.4f}')} | "
                         f"<span style='color:{price_change_color};'>涨跌幅: {escape_html(f'{price_change:.2f}%')} {price_change_arrow}</span> | "
                         f"密集度: <span style='color:{density_color};'>{density_txt}</span> "
@@ -822,19 +824,30 @@ def build_tabs():
 
 
 def update_tab_content(tf, strategy):
+    """更新标签页内容 - 修复版本"""
     container = st.session_state.result_containers[(tf, strategy)]['container']
     placeholder = st.session_state.result_containers[(tf, strategy)]['placeholder']
+    
     with container:
-        with placeholder.container():
-            signals = st.session_state.valid_signals[(tf, strategy)][-868:][::-1]  # 修改为倒序排列，最新的在最上方
-            if not signals:
-                st.markdown("暂无信号")
-                return
-            for s in signals:
-                if strategy == 'cluster':
-                    render_cluster_signal(tf, s)
-                else:
-                    render_cross_signal(tf, s)
+        # 清除现有内容
+        placeholder.empty()
+        
+        # 获取当前时间框架和策略的信号
+        signals = st.session_state.valid_signals.get((tf, strategy), [])
+        
+        if not signals:
+            placeholder.markdown("暂无信号")
+            return
+            
+        # 显示信号数量
+        placeholder.markdown(f"**{tf.upper()} {STRATEGIES[strategy]}信号: {len(signals)}个**")
+        
+        # 显示所有信号
+        for s in signals[-868:][::-1]:  # 修改为倒序排列，最新的在最上方
+            if strategy == 'cluster':
+                render_cluster_signal(tf, s)
+            else:
+                render_cross_signal(tf, s)
 
 
 # ========== 处理与监控 ==========
@@ -904,53 +917,55 @@ def monitor_symbols(api_key, api_secret):
             time.sleep(30)
             continue
         failed_copy = st.session_state.failed_symbols.copy()
-        futures = []
-        for s in symbols:
-            for tf in TIMEFRAMES:
-                futures.append(executor.submit(process_symbol_timeframe, exchange, s, tf, failed_copy))
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for s in symbols:
+                for tf in TIMEFRAMES:
+                    futures.append(executor.submit(process_symbol_timeframe, exchange, s, tf, failed_copy))
 
-        # 改为逐个处理完成的任务
-        for i, fut in enumerate(as_completed(futures)):
-            progress = (i + 1) / len(futures)
-            progress_bar.progress(progress)
-            status_text.text(f"检测进度: {progress * 100:.1f}%")
+            # 改为逐个处理完成的任务
+            for i, fut in enumerate(as_completed(futures)):
+                progress = (i + 1) / len(futures)
+                progress_bar.progress(progress)
+                status_text.text(f"检测进度: {progress * 100:.1f}%")
 
-            symbol, cluster_signals, cross_signals = fut.result()
+                symbol, cluster_signals, cross_signals = fut.result()
 
-            # 实时处理每个任务返回的信号
-            for sig in cluster_signals:
-                tf = sig['timeframe']
-                signal_id = generate_signal_id_cluster(sig['symbol'], tf, sig['detect_time'])
-                if signal_id not in st.session_state.shown_signals[(tf, 'cluster')]:
-                    st.session_state.valid_signals[(tf, 'cluster')].append(sig)
-                    st.session_state.shown_signals[(tf, 'cluster')].add(signal_id)
-                    new_signals[(tf, 'cluster')] += 1
-                    # 立即更新对应的标签页
-                    update_tab_content(tf, 'cluster')
-                    # 加入右侧最新68条队列
-                    _enqueue_latest(sig, tf, 'cluster', symbol, signal_id)
+                # 实时处理每个任务返回的信号
+                for sig in cluster_signals:
+                    tf = sig['timeframe']
+                    signal_id = generate_signal_id_cluster(sig['symbol'], tf, sig['detect_time'])
+                    if signal_id not in st.session_state.shown_signals[(tf, 'cluster')]:
+                        st.session_state.valid_signals[(tf, 'cluster')].append(sig)
+                        st.session_state.shown_signals[(tf, 'cluster')].add(signal_id)
+                        new_signals[(tf, 'cluster')] += 1
+                        # 立即更新对应的标签页
+                        update_tab_content(tf, 'cluster')
+                        # 加入右侧最新68条队列
+                        _enqueue_latest(sig, tf, 'cluster', symbol, signal_id)
 
-            for sig in cross_signals:
-                tf = sig['timeframe']
-                cross_time = sig['cross_time']
-                signal_id = generate_signal_id_cross(sig['symbol'], tf, cross_time, sig['signal_type'])
-                key = (symbol, tf, 'cross')
-                last_time = st.session_state.last_signal_times.get(key)
-                interval = TIMEFRAMES[tf]['interval'] * CONFIG.get('cross_cooldown_multiplier', 5)
+                for sig in cross_signals:
+                    tf = sig['timeframe']
+                    cross_time = sig['cross_time']
+                    signal_id = generate_signal_id_cross(sig['symbol'], tf, cross_time, sig['signal_type'])
+                    key = (symbol, tf, 'cross')
+                    last_time = st.session_state.last_signal_times.get(key)
+                    interval = TIMEFRAMES[tf]['interval'] * CONFIG.get('cross_cooldown_multiplier', 5)
 
-                if not (last_time and (cross_time - last_time).total_seconds() < interval) and \
-                        signal_id not in st.session_state.shown_signals[(tf, 'cross')]:
-                    st.session_state.valid_signals[(tf, 'cross')].append(sig)
-                    st.session_state.shown_signals[(tf, 'cross')].add(signal_id)
-                    st.session_state.last_signal_times[key] = cross_time
-                    new_signals[(tf, 'cross')] += 1
-                    # 立即更新对应的标签页
-                    update_tab_content(tf, 'cross')
-                    # 加入右侧最新68条队列
-                    _enqueue_latest(sig, tf, 'cross', symbol, signal_id)  # 修复这里：使用 sig 而不是 st
+                    if not (last_time and (cross_time - last_time).total_seconds() < interval) and \
+                            signal_id not in st.session_state.shown_signals[(tf, 'cross')]:
+                        st.session_state.valid_signals[(tf, 'cross')].append(sig)
+                        st.session_state.shown_signals[(tf, 'cross')].add(signal_id)
+                        st.session_state.last_signal_times[key] = cross_time
+                        new_signals[(tf, 'cross')] += 1
+                        # 立即更新对应的标签页
+                        update_tab_content(tf, 'cross')
+                        # 加入右侧最新68条队列
+                        _enqueue_latest(sig, tf, 'cross', symbol, signal_id)
 
-            # 每次有信号更新时都刷新右侧栏
-            render_right_sidebar()
+                # 每次有信号更新时都刷新右侧栏
+                render_right_sidebar()
 
         # 本轮结束后更新统计信息
         stats.markdown(
@@ -1073,6 +1088,14 @@ def main():
             for strategy in STRATEGIES:
                 count = len(st.session_state.valid_signals.get((tf, strategy), []))
                 st.write(f"{tf.upper()} {STRATEGIES[strategy]}信号: {count}个")
+                
+    # 定期更新所有标签页内容
+    current_time = time.time()
+    if current_time - st.session_state.last_update_time > 5:  # 每5秒更新一次
+        for tf in TIMEFRAMES:
+            for strategy in STRATEGIES:
+                update_tab_content(tf, strategy)
+        st.session_state.last_update_time = current_time
 
 
 if __name__ == '__main__':
