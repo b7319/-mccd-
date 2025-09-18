@@ -96,6 +96,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
 # ========== 工具函数 ==========
 def escape_html(text):
     """转义HTML特殊字符"""
@@ -593,7 +594,6 @@ def _enqueue_latest(signal, tf, strategy, symbol, signal_id):
         'signal_type': signal.get('signal_type'),
         'direction': signal.get('direction'),
         'cross_time': signal.get('cross_time'),
-        'cross_price': signal.get('cross_price'),
         'ma34': signal.get('ma34'),
         'ma170': signal.get('ma170'),
         'ma453': signal.get('ma453'),
@@ -718,7 +718,7 @@ def render_right_sidebar():
                     line = (
                         f"<div class='item' style='border-left-color:{edge_color};'>"
                         f"<a href='{symbol_link}' target='_blank' style='color:{edge_color};font-weight:600;'>📊📊 {symbol_simple} [{tf.upper()}]</a> "
-                        f"{pos_text} | 密集度 {density_txt} | 现价 {escape_html(f'{s["current_price"]:.4f}')} | "
+                        f"{pos_text} | 密集度 {density_txt} | 现价 {escape_html(f'{s['current_price']:.4f}')} | "
                         f"<span style='color:{price_change_color};'>涨跌幅: {escape_html(f'{price_change:.2f}%')} {price_change_arrow}</span> "
                         f"<span style='float:right;color:#555;'>{dt_str}</span>"
                         f"</div>"
@@ -752,8 +752,8 @@ def render_right_sidebar():
 
                     line = (
                         f"<div class='item' style='border-left-color:{edge_color};'>"
-                        f"<a href='{symbol_link}' target='_blank' style='color:{edge_color};font-weight:600;'>⏳ {symbol_simple} [{tf.upper()}] {direction</a> "
-                        f"{s.get('signal_type', '')} | 现价 {escape_html(f'{s["current_price"]:.4f}')} | "
+                        f"<a href='{symbol_link}' target='_blank' style='color:{edge_color};font-weight:600;'>⏳ {symbol_simple} [{tf.upper()}] {direction}</a> "
+                        f"{s.get('signal_type', '')} | 现价 {escape_html(f'{s['current_price']:.4f}')} | "
                         f"<span style='color:{price_change_color};'>涨跌幅: {escape_html(f'{price_change:.2f}%')} {price_change_arrow}</span> | "
                         f"密集度: <span style='color:{density_color};'>{density_txt}</span> "
                         f"<span style='float:right;color:#555;'>{ct_str}</span>"
@@ -827,21 +827,21 @@ def update_tab_content(tf, strategy):
     """更新标签页内容 - 修复版本"""
     container = st.session_state.result_containers[(tf, strategy)]['container']
     placeholder = st.session_state.result_containers[(tf, strategy)]['placeholder']
-    
+
     with container:
         # 清除现有内容
         placeholder.empty()
-        
+
         # 获取当前时间框架和策略的信号
         signals = st.session_state.valid_signals.get((tf, strategy), [])
-        
+
         if not signals:
             placeholder.markdown("暂无信号")
             return
-            
+
         # 显示信号数量
         placeholder.markdown(f"**{tf.upper()} {STRATEGIES[strategy]}信号: {len(signals)}个**")
-        
+
         # 显示所有信号
         for s in signals[-868:][::-1]:  # 修改为倒序排列，最新的在最上方
             if strategy == 'cluster':
@@ -906,7 +906,7 @@ def monitor_symbols(api_key, api_secret):
     status_text = st.sidebar.empty()
     stats = st.sidebar.empty()
     max_workers = CONFIG.get('max_workers', 4)
-    
+
     # 监控循环
     while st.session_state.monitoring_active:
         start_time = time.time()
@@ -917,7 +917,7 @@ def monitor_symbols(api_key, api_secret):
             time.sleep(30)
             continue
         failed_copy = st.session_state.failed_symbols.copy()
-        
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for s in symbols:
@@ -1052,23 +1052,23 @@ def main():
     st.sidebar.subheader('API & 控制')
     api_key = st.sidebar.text_input('Gate.io API Key', value=API_KEY)
     api_secret = st.sidebar.text_input('Gate.io API Secret', value=API_SECRET, type='password')
-    
+
     col1, col2 = st.sidebar.columns(2)
     with col1:
         start_btn = st.button('开始监控')
     with col2:
         stop_btn = st.button('停止监控')
-        
+
     if start_btn:
         if not api_key or not api_secret:
             st.sidebar.error('请填写 API Key/Secret')
             return
         st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
         start_monitoring(api_key, api_secret)
-        
+
     if stop_btn:
         stop_monitoring()
-        
+
     st.sidebar.markdown(
         '提示：三均线密集的判定为：在最近 X 根K线内发生，且在最近 Y 根内唯一，从而排除反复窄幅盘整的噪声。')
     with st.expander('筛选规则说明（简要）', expanded=False):
@@ -1077,25 +1077,14 @@ def main():
                     2) 在最近 Y 根 K 线内（Y 可调，默认为 86）恰好只有一次密集发生 —— 用来排除反复盘整造成的噪声
                     - 双均线交叉：沿用原 513.py 的双均线组合 + MA7 与 MA34 的短期确认
                     - 冷却：三均线密集 -> 每一次具体发生的信号只展示一次（使用发生时点唯一ID）；双均线交叉 -> interval * 冷却倍数秒内不重复''')
-                    
-    # 如果监控正在进行，显示当前状态
-    if st.session_state.monitoring_active:
-        st.sidebar.info("监控运行中...")
-        
-    # 显示当前信号状态
-    with st.expander("当前信号状态", expanded=True):
-        for tf in TIMEFRAMES:
-            for strategy in STRATEGIES:
-                count = len(st.session_state.valid_signals.get((tf, strategy), []))
-                st.write(f"{tf.upper()} {STRATEGIES[strategy]}信号: {count}个")
-                
-    # 定期更新所有标签页内容
-    current_time = time.time()
-    if current_time - st.session_state.last_update_time > 5:  # 每5秒更新一次
-        for tf in TIMEFRAMES:
-            for strategy in STRATEGIES:
-                update_tab_content(tf, strategy)
-        st.session_state.last_update_time = current_time
+    if start_btn:
+        if not api_key or not api_secret:
+            st.sidebar.error('请填写 API Key/Secret')
+            return
+        st.session_state.symbols_to_monitor = get_valid_symbols(api_key, api_secret, CONFIG['top_n_symbols'])
+        monitor_symbols(api_key, api_secret)
+    else:
+        st.info('配置完成后点击侧栏的【开始监控】按钮以启动检测。')
 
 
 if __name__ == '__main__':
