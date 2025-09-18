@@ -46,7 +46,7 @@ CONFIG = {
     'fetch_limit': 1000,
     'max_workers': 4,
     'top_n_symbols': 300,
-    'heartbeat_url': "https://cg141319.streamlit.app/health"  # 替换为你的 Streamlit 应用健康检查 URL
+    #'heartbeat_url': "https://cg141319.streamlit.app/health"  # 替换为你的 Streamlit 应用健康检查 URL
 }
 
 # Session 初始化
@@ -994,3 +994,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
